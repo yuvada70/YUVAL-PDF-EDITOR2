@@ -14,15 +14,21 @@ export async function exportPdf(
   originalBuffer: ArrayBuffer,
   annotations: Annotation[],
   deletedPages: Set<number>,
-  pageRotations: Map<number, number>
+  pageRotations: Map<number, number>,
+  pageOrder?: number[]
 ): Promise<Uint8Array> {
   const srcDoc = await PDFDocument.load(originalBuffer);
   const totalPages = srcDoc.getPageCount();
 
   const outDoc = await PDFDocument.create();
-  const keepIndices: number[] = [];
-  for (let i = 0; i < totalPages; i++) {
-    if (!deletedPages.has(i)) keepIndices.push(i);
+  let keepIndices: number[];
+  if (pageOrder && pageOrder.length > 0) {
+    keepIndices = pageOrder;
+  } else {
+    keepIndices = [];
+    for (let i = 0; i < totalPages; i++) {
+      if (!deletedPages.has(i)) keepIndices.push(i);
+    }
   }
 
   const copiedPages = await outDoc.copyPages(srcDoc, keepIndices);

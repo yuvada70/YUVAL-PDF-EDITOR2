@@ -22,16 +22,17 @@ export function PdfViewer() {
     setLoading(true)
     void (async () => {
       const doc = await loadPdfDocument(store.pdfFile!)
-      const rotation = store.pageRotations.get(store.currentPage) ?? 0
+      const origIdx = store.pageOrder[store.currentPage] ?? store.currentPage
+      const rotation = store.pageRotations.get(origIdx) ?? 0
       if (cancelled || !canvasRef.current) return
-      await renderPageToCanvas(doc, store.currentPage, canvasRef.current, RENDER_SCALE * store.zoom, rotation)
+      await renderPageToCanvas(doc, origIdx, canvasRef.current, RENDER_SCALE * store.zoom, rotation)
       if (!cancelled && canvasRef.current) {
         setCanvasSize({ width: canvasRef.current.width, height: canvasRef.current.height })
       }
       setLoading(false)
     })()
     return () => { cancelled = true }
-  }, [store.pdfFile, store.currentPage, store.zoom, store.pageRotations])
+  }, [store.pdfFile, store.currentPage, store.zoom, store.pageRotations, store.pageOrder])
 
   // --- Highlight drag state ---
   const highlightDragRef = useRef<{ startX: number; startY: number; id: string } | null>(null)
