@@ -1,9 +1,9 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState, useEffect } from 'react'
 import {
   FolderOpen, Type, PenLine, Highlighter, Pencil,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   RotateCcw, RotateCw, Trash2, Download, Eraser,
-  Merge, Scissors, Copy, FileOutput, LayoutDashboard,
+  Merge, Scissors, Copy, FileOutput, LayoutDashboard, ChevronDown,
 } from 'lucide-react'
 import { useEditorStore } from '../store/editorStore'
 import { ToolMode } from '../types'
@@ -14,6 +14,8 @@ interface Props {
   onFileOpen: (file: File) => void
   onMerge: () => void
   onSplit: () => void
+  onToggleSidebar: () => void
+  sidebarVisible: boolean
 }
 
 function downloadBytes(bytes: Uint8Array, name: string) {
@@ -26,7 +28,7 @@ function downloadBytes(bytes: Uint8Array, name: string) {
   URL.revokeObjectURL(url)
 }
 
-export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit }: Props) {
+export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit, onToggleSidebar, sidebarVisible }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const store = useEditorStore()
   const total = store.pageOrder.length
@@ -93,7 +95,7 @@ export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit }: Props) {
   )
 
   return (
-    <div className="flex items-center gap-0.5 px-2 py-1.5 bg-slate-800 text-white shadow-lg flex-wrap z-10 min-h-[52px]">
+    <div className="flex items-center gap-0.5 px-2 py-1.5 bg-slate-800 text-white shadow-lg z-10 min-h-[52px] flex-shrink-0 overflow-visible">
       <input ref={fileRef} type="file" accept="application/pdf" className="hidden" onChange={handleFileChange} />
 
       {/* ── File ── */}
@@ -102,16 +104,25 @@ export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit }: Props) {
 
       <Divider />
 
-      {/* ── Pages ── */}
+      {/* ── Pages dropdown ── */}
       <SectionLabel>Pages</SectionLabel>
-      <ToolButton icon={<Merge size={16} />} label="Merge PDFs" onClick={onMerge} highlight />
-      <ToolButton icon={<Scissors size={16} />} label="Split PDF" onClick={onSplit} disabled={!store.pdfFile} highlight />
-      <ToolButton
-        icon={<Copy size={16} />}
-        label="Duplicate Page"
-        onClick={() => store.duplicatePage(store.currentPage)}
-        disabled={!store.pdfFile}
+      <PagesDropdown
+        hasPdf={!!store.pdfFile}
+        selectedCount={selectedCount}
+        sidebarVisible={sidebarVisible}
+        currentPage={store.currentPage}
+        total={total}
+        onMerge={onMerge}
+        onSplit={onSplit}
+        onDuplicate={() => store.duplicatePage(store.currentPage)}
+        onExportSelected={() => void handleExportSelected()}
+        onToggleSidebar={onToggleSidebar}
       />
+
+      <Divider />
+
+      {/* ── Pages actions ── */}
+      <SectionLabel>Page</SectionLabel>
       <ToolButton
         icon={<RotateCcw size={16} />}
         label="Rotate Left"
@@ -165,50 +176,9 @@ export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit }: Props) {
 
       <Divider />
 
-      {/* ── Organize ── */}
-      <SectionLabel>Organize</SectionLabel>
-      <div className="flex items-center gap-0.5 bg-slate-700/60 rounded px-1 py-0.5">
-        <LayoutDashboard size={14} className="text-slate-400 mr-1" />
-        <span className="text-[10px] text-slate-400 mr-1">Page Organizer:</span>
-        <span className="text-[10px] text-slate-300">Drag thumbnails · Ctrl+click to select</span>
-      </div>
-
-      {selectedCount > 0 && (
-        <>
-          <div className="flex items-center gap-1 ml-1 bg-blue-600/80 rounded px-2 py-1">
-            <span className="text-xs font-semibold">{selectedCount} page{selectedCount !== 1 ? 's' : ''} selected</span>
-            <button
-              onClick={() => void handleExportSelected()}
-              className="flex items-center gap-1 ml-1 bg-white/20 hover:bg-white/30 rounded px-1.5 py-0.5 text-xs font-medium transition-colors"
-              title="Export selected pages as new PDF"
-            >
-              <FileOutput size={13} />
-              Export Selected
-            </button>
-            <button
-              onClick={() => {
-                if (store.pageOrder.length - selectedCount >= 1) store.deleteSelectedPages()
-              }}
-              className="flex items-center gap-1 ml-0.5 bg-red-500/70 hover:bg-red-500 rounded px-1.5 py-0.5 text-xs font-medium transition-colors"
-              title="Delete selected pages"
-            >
-              <Trash2 size={13} />
-              Delete
-            </button>
-            <button
-              onClick={() => store.clearSelection()}
-              className="ml-0.5 text-slate-300 hover:text-white text-xs"
-              title="Clear selection"
-            >✕</button>
-          </div>
-        </>
-      )}
-
-      <Divider />
-
       <ToolButton
         icon={<Eraser size={16} />}
-        label="Clear Annotations"
+        label="Clear Ann."
         onClick={() => {
           if (confirm('Clear all annotations on all pages?')) {
             useEditorStore.setState({ annotations: [] })
@@ -226,6 +196,102 @@ export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit }: Props) {
           primary
         />
       </div>
+    </div>
+  )
+}
+
+interface PagesDropdownProps {
+  hasPdf: boolean
+  selectedCount: number
+  sidebarVisible: boolean
+  currentPage: number
+  total: number
+  onMerge: () => void
+  onSplit: () => void
+  onDuplicate: () => void
+  onExportSelected: () => void
+  onToggleSidebar: () => void
+}
+
+function PagesDropdown({
+  hasPdf, selectedCount, sidebarVisible,
+  onMerge, onSplit, onDuplicate, onExportSelected, onToggleSidebar,
+}: PagesDropdownProps) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const item = (
+    icon: React.ReactNode,
+    label: string,
+    onClick: () => void,
+    disabled = false,
+    badge?: string,
+  ) => (
+    <button
+      onClick={() => { if (!disabled) { onClick(); setOpen(false) } }}
+      disabled={disabled}
+      className={`flex items-center gap-3 w-full px-3 py-2 text-sm text-left transition-colors rounded ${
+        disabled
+          ? 'text-slate-400 cursor-not-allowed'
+          : 'text-slate-800 hover:bg-blue-50 hover:text-blue-700 cursor-pointer'
+      }`}
+    >
+      <span className={`flex-shrink-0 ${disabled ? 'text-slate-300' : 'text-slate-500'}`}>{icon}</span>
+      <span className="flex-1 font-medium">{label}</span>
+      {badge && <span className="text-xs bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 font-semibold">{badge}</span>}
+    </button>
+  )
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded text-[11px] font-medium transition-colors select-none whitespace-nowrap cursor-pointer ${
+          open ? 'bg-blue-600 text-white' : 'bg-slate-600 hover:bg-slate-500 text-slate-100'
+        }`}
+      >
+        <div className="flex items-center gap-1">
+          <LayoutDashboard size={16} />
+          <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        </div>
+        <span>Pages ▾</span>
+      </button>
+
+      {open && (
+        <div className="absolute top-full left-0 mt-1 w-56 bg-white rounded-xl shadow-2xl border border-slate-200 z-50 py-1.5 overflow-hidden">
+          <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-slate-100 mb-1">
+            Page Actions
+          </div>
+          {item(<Merge size={15} />, 'Merge PDFs', onMerge)}
+          {item(<Scissors size={15} />, 'Split PDF', onSplit, !hasPdf)}
+          {item(<Copy size={15} />, 'Duplicate Page', onDuplicate, !hasPdf)}
+          {item(
+            <FileOutput size={15} />,
+            'Export Selected',
+            onExportSelected,
+            !hasPdf || selectedCount === 0,
+            selectedCount > 0 ? `${selectedCount} page${selectedCount !== 1 ? 's' : ''}` : undefined,
+          )}
+          <div className="border-t border-slate-100 mt-1 pt-1">
+            {item(
+              <LayoutDashboard size={15} />,
+              sidebarVisible ? 'Hide Page Organizer' : 'Show Page Organizer',
+              onToggleSidebar,
+              !hasPdf,
+              sidebarVisible ? 'ON' : undefined,
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

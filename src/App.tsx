@@ -14,6 +14,7 @@ export default function App() {
   const [showSignatureModal, setShowSignatureModal] = useState(false)
   const [showMergeModal, setShowMergeModal] = useState(false)
   const [showSplitModal, setShowSplitModal] = useState(false)
+  const [sidebarVisible, setSidebarVisible] = useState(true)
 
   const handleFile = useCallback(async (file: File) => {
     const buffer = await file.arrayBuffer()
@@ -33,10 +34,12 @@ export default function App() {
         onFileOpen={handleFile}
         onMerge={() => setShowMergeModal(true)}
         onSplit={() => setShowSplitModal(true)}
+        onToggleSidebar={() => setSidebarVisible((v) => !v)}
+        sidebarVisible={sidebarVisible}
       />
       {pdfFile ? (
         <div className="flex flex-1 overflow-hidden">
-          <Sidebar />
+          {sidebarVisible && <Sidebar />}
           <PdfViewer />
         </div>
       ) : (
