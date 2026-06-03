@@ -1,5 +1,8 @@
 import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
-import { Annotation, TextAnnotation, SignatureAnnotation, DrawAnnotation, HighlightAnnotation } from '../types';
+import {
+  Annotation, TextAnnotation, SignatureAnnotation,
+  DrawAnnotation, HighlightAnnotation,
+} from '../types';
 import { loadPdfDocument } from './pdfRenderer';
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -10,29 +13,29 @@ function hexToRgb(hex: string): [number, number, number] {
   return [r, g, b];
 }
 
+// annotations are stored with pageIndex = position in pageOrder at the time
+// they were created. We pass pageOrder so we know which original page each
+// position maps to, but annotations already use position-based indices.
 export async function exportPdf(
   originalBuffer: ArrayBuffer,
   annotations: Annotation[],
-  deletedPages: Set<number>,
+  pageOrder: number[],
   pageRotations: Map<number, number>
 ): Promise<Uint8Array> {
   const srcDoc = await PDFDocument.load(originalBuffer);
-  const totalPages = srcDoc.getPageCount();
 
   const outDoc = await PDFDocument.create();
-  const keepIndices: number[] = [];
-  for (let i = 0; i < totalPages; i++) {
-    if (!deletedPages.has(i)) keepIndices.push(i);
-  }
 
-  const copiedPages = await outDoc.copyPages(srcDoc, keepIndices);
+  // Copy pages in pageOrder sequence
+  // pageOrder may contain duplicates (duplicated pages)
+  const copiedPages = await outDoc.copyPages(srcDoc, pageOrder);
   copiedPages.forEach((p) => outDoc.addPage(p));
 
-  for (let newIdx = 0; newIdx < keepIndices.length; newIdx++) {
-    const origIdx = keepIndices[newIdx];
-    const rot = pageRotations.get(origIdx) ?? 0;
+  // Apply per-position rotations
+  for (let pos = 0; pos < pageOrder.length; pos++) {
+    const rot = pageRotations.get(pos) ?? 0;
     if (rot !== 0) {
-      const page = outDoc.getPage(newIdx);
+      const page = outDoc.getPage(pos);
       const current = page.getRotation().angle;
       page.setRotation(degrees((current + rot) % 360));
     }
@@ -41,30 +44,27 @@ export async function exportPdf(
   const font = await outDoc.embedFont(StandardFonts.Helvetica);
   const pdfJsDoc = await loadPdfDocument(originalBuffer);
 
-  for (let newIdx = 0; newIdx < keepIndices.length; newIdx++) {
-    const origIdx = keepIndices[newIdx];
-    const page = outDoc.getPage(newIdx);
+  for (let pos = 0; pos < pageOrder.length; pos++) {
+    const origIdx = pageOrder[pos];
+    const page = outDoc.getPage(pos);
     const { width: pageWidth, height: pageHeight } = page.getSize();
-    const pageAnnotations = annotations.filter((a) => a.pageIndex === origIdx);
+    const pageAnnotations = annotations.filter((a) => a.pageIndex === pos);
+
+    if (pageAnnotations.length === 0) continue;
 
     const renderScale = 1.5;
     const pdfJsPage = await pdfJsDoc.getPage(origIdx + 1);
     const viewport = pdfJsPage.getViewport({ scale: renderScale, rotation: 0 });
-    const canvasWidth = viewport.width;
-    const canvasHeight = viewport.height;
-
-    const scaleX = pageWidth / canvasWidth;
-    const scaleY = pageHeight / canvasHeight;
+    const scaleX = pageWidth / viewport.width;
+    const scaleY = pageHeight / viewport.height;
 
     for (const ann of pageAnnotations) {
       if (ann.type === 'text') {
         const t = ann as TextAnnotation;
-        const pdfX = t.x * scaleX;
-        const pdfY = pageHeight - t.y * scaleY - t.fontSize;
         const [r, g, b] = hexToRgb(t.color);
         page.drawText(t.text, {
-          x: pdfX,
-          y: Math.max(0, pdfY),
+          x: t.x * scaleX,
+          y: Math.max(0, pageHeight - t.y * scaleY - t.fontSize),
           size: t.fontSize * scaleX,
           font,
           color: rgb(r, g, b),
@@ -74,30 +74,22 @@ export async function exportPdf(
         try {
           const imgBytes = await fetch(s.dataUrl).then((r) => r.arrayBuffer());
           const img = await outDoc.embedPng(imgBytes);
-          const pdfX = s.x * scaleX;
-          const pdfY = pageHeight - (s.y + s.height) * scaleY;
           page.drawImage(img, {
-            x: pdfX,
-            y: pdfY,
+            x: s.x * scaleX,
+            y: pageHeight - (s.y + s.height) * scaleY,
             width: s.width * scaleX,
             height: s.height * scaleY,
           });
-        } catch {
-          // skip invalid signature
-        }
+        } catch { /* skip */ }
       } else if (ann.type === 'draw') {
         const d = ann as DrawAnnotation;
         const [r, g, b] = hexToRgb(d.color);
         for (const path of d.paths) {
           if (path.length < 2) continue;
           for (let pi = 0; pi < path.length - 1; pi++) {
-            const x1 = path[pi].x * scaleX;
-            const y1 = pageHeight - path[pi].y * scaleY;
-            const x2 = path[pi + 1].x * scaleX;
-            const y2 = pageHeight - path[pi + 1].y * scaleY;
             page.drawLine({
-              start: { x: x1, y: y1 },
-              end: { x: x2, y: y2 },
+              start: { x: path[pi].x * scaleX, y: pageHeight - path[pi].y * scaleY },
+              end: { x: path[pi + 1].x * scaleX, y: pageHeight - path[pi + 1].y * scaleY },
               thickness: d.lineWidth * scaleX,
               color: rgb(r, g, b),
             });
@@ -106,11 +98,9 @@ export async function exportPdf(
       } else if (ann.type === 'highlight') {
         const h = ann as HighlightAnnotation;
         const [r, g, b] = hexToRgb(h.color);
-        const pdfX = h.x * scaleX;
-        const pdfY = pageHeight - (h.y + h.height) * scaleY;
         page.drawRectangle({
-          x: pdfX,
-          y: pdfY,
+          x: h.x * scaleX,
+          y: pageHeight - (h.y + h.height) * scaleY,
           width: h.width * scaleX,
           height: h.height * scaleY,
           color: rgb(r, g, b),
@@ -120,5 +110,26 @@ export async function exportPdf(
     }
   }
 
+  return outDoc.save();
+}
+
+export async function mergePdfs(buffers: ArrayBuffer[]): Promise<Uint8Array> {
+  const outDoc = await PDFDocument.create();
+  for (const buf of buffers) {
+    const src = await PDFDocument.load(buf);
+    const pages = await outDoc.copyPages(src, src.getPageIndices());
+    pages.forEach((p) => outDoc.addPage(p));
+  }
+  return outDoc.save();
+}
+
+export async function extractPages(
+  originalBuffer: ArrayBuffer,
+  pageIndices: number[]
+): Promise<Uint8Array> {
+  const srcDoc = await PDFDocument.load(originalBuffer);
+  const outDoc = await PDFDocument.create();
+  const pages = await outDoc.copyPages(srcDoc, pageIndices);
+  pages.forEach((p) => outDoc.addPage(p));
   return outDoc.save();
 }

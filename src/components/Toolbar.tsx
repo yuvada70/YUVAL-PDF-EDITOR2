@@ -2,32 +2,32 @@ import { useCallback, useRef } from 'react'
 import {
   FolderOpen, Type, PenLine, Highlighter, Pencil,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
-  RotateCcw, RotateCw, Trash2, Download, Eraser
+  RotateCcw, RotateCw, Trash2, Download, Eraser,
+  Merge, Scissors,
 } from 'lucide-react'
-import { useEditorStore, getActivePages } from '../store/editorStore'
+import { useEditorStore } from '../store/editorStore'
 import { ToolMode } from '../types'
 import { exportPdf } from '../utils/pdfExporter'
 
 interface Props {
   onToolSelect: (tool: ToolMode) => void
   onFileOpen: (file: File) => void
+  onMerge: () => void
+  onSplit: () => void
 }
 
-export function Toolbar({ onToolSelect, onFileOpen }: Props) {
+export function Toolbar({ onToolSelect, onFileOpen, onMerge, onSplit }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const store = useEditorStore()
-  const activePages = getActivePages(store)
-  const currentVisibleIdx = activePages.indexOf(store.currentPage)
+  const total = store.pageOrder.length
 
-  const canPrev = currentVisibleIdx > 0
-  const canNext = currentVisibleIdx < activePages.length - 1
+  const canPrev = store.currentPage > 0
+  const canNext = store.currentPage < total - 1
 
   const goPage = useCallback((dir: -1 | 1) => {
-    const newIdx = currentVisibleIdx + dir
-    if (newIdx >= 0 && newIdx < activePages.length) {
-      store.setCurrentPage(activePages[newIdx])
-    }
-  }, [currentVisibleIdx, activePages, store])
+    const next = store.currentPage + dir
+    if (next >= 0 && next < total) store.setCurrentPage(next)
+  }, [store, total])
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -40,7 +40,7 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       const bytes = await exportPdf(
         store.pdfFile,
         store.annotations,
-        store.deletedPages,
+        store.pageOrder,
         store.pageRotations
       )
       const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
@@ -66,8 +66,8 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       label={label}
       active={store.tool === tool}
       onClick={() => {
-        if (store.tool === tool) { store.setTool('none') }
-        else { onToolSelect(tool) }
+        if (store.tool === tool) store.setTool('none')
+        else onToolSelect(tool)
       }}
       disabled={!store.pdfFile}
     />
@@ -77,12 +77,14 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
     <div className="flex items-center gap-1 px-3 py-2 bg-slate-800 text-white shadow-lg flex-wrap z-10">
       <input ref={fileRef} type="file" accept="application/pdf" className="hidden" onChange={handleFileChange} />
       <ToolButton icon={<FolderOpen size={18} />} label="Open PDF" onClick={() => fileRef.current?.click()} />
+      <ToolButton icon={<Merge size={18} />} label="Merge PDFs" onClick={onMerge} />
+      <ToolButton icon={<Scissors size={18} />} label="Split PDF" onClick={onSplit} disabled={!store.pdfFile} />
 
       <Divider />
 
       <ToolButton icon={<ChevronLeft size={18} />} label="Prev" onClick={() => goPage(-1)} disabled={!canPrev} />
       <span className="text-xs text-slate-300 px-1 whitespace-nowrap">
-        {store.pdfFile ? `${currentVisibleIdx + 1} / ${activePages.length}` : '—'}
+        {store.pdfFile ? `${store.currentPage + 1} / ${total}` : '—'}
       </span>
       <ToolButton icon={<ChevronRight size={18} />} label="Next" onClick={() => goPage(1)} disabled={!canNext} />
 
@@ -120,8 +122,8 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       <ToolButton
         icon={<Trash2 size={18} />}
         label="Delete Page"
-        onClick={() => activePages.length > 1 && store.deletePage(store.currentPage)}
-        disabled={!store.pdfFile || activePages.length <= 1}
+        onClick={() => total > 1 && store.deletePage(store.currentPage)}
+        disabled={!store.pdfFile || total <= 1}
         danger
       />
 
@@ -191,7 +193,7 @@ interface BtnProps {
   danger?: boolean
 }
 
-function ToolButton({ icon, label, onClick, active, disabled, primary, danger }: BtnProps) {
+export function ToolButton({ icon, label, onClick, active, disabled, primary, danger }: BtnProps) {
   const base = 'flex flex-col items-center gap-0.5 px-2 py-1.5 rounded text-xs font-medium transition-colors select-none'
   const variant = disabled
     ? 'opacity-30 cursor-not-allowed text-slate-400'
@@ -204,11 +206,7 @@ function ToolButton({ icon, label, onClick, active, disabled, primary, danger }:
     : 'hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer'
 
   return (
-    <button
-      className={`${base} ${variant}`}
-      onClick={disabled ? undefined : onClick}
-      title={label}
-    >
+    <button className={`${base} ${variant}`} onClick={disabled ? undefined : onClick} title={label}>
       {icon}
       <span className="hidden sm:block">{label}</span>
     </button>

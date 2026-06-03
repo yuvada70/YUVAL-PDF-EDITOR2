@@ -52,8 +52,3 @@ export type Annotation =
   | SignatureAnnotation
   | DrawAnnotation
   | HighlightAnnotation;
-
-export interface PageRotation {
-  pageIndex: number;
-  rotation: number;
-}
