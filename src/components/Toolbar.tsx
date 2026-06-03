@@ -7,13 +7,15 @@ import {
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { ToolMode } from '../types'
 import { exportPdf } from '../utils/pdfExporter'
+import { PagesMenu } from './PagesMenu'
 
 interface Props {
   onToolSelect: (tool: ToolMode) => void
   onFileOpen: (file: File) => void
+  onMerge: (file: File) => void
 }
 
-export function Toolbar({ onToolSelect, onFileOpen }: Props) {
+export function Toolbar({ onToolSelect, onFileOpen, onMerge }: Props) {
   const fileRef = useRef<HTMLInputElement>(null)
   const store = useEditorStore()
   const activePages = getActivePages(store)
@@ -124,6 +126,10 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
         disabled={!store.pdfFile || activePages.length <= 1}
         danger
       />
+
+      <Divider />
+
+      <PagesMenu onMerge={onMerge} />
 
       <Divider />
 
