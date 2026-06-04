@@ -1,8 +1,9 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import {
   FolderOpen, Type, PenLine, Highlighter, Pencil,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
-  RotateCcw, RotateCw, Trash2, Download, Eraser
+  RotateCcw, RotateCw, Trash2, Download, Eraser, ChevronDown,
+  FilePlus2, Scissors, Copy, FileOutput
 } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { ToolMode } from '../types'
@@ -138,6 +139,8 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
         disabled={!store.pdfFile}
       />
 
+      <PagesDropdown disabled={!store.pdfFile} />
+
       <div className="ml-auto">
         <ToolButton
           icon={<Download size={18} />}
@@ -147,6 +150,53 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
           primary
         />
       </div>
+    </div>
+  )
+}
+
+function PagesDropdown({ disabled }: { disabled: boolean }) {
+  const [open, setOpen] = useState(false)
+
+  const items = [
+    { icon: <FilePlus2 size={15} />, label: 'Merge PDFs' },
+    { icon: <Scissors size={15} />, label: 'Split PDF' },
+    { icon: <Copy size={15} />, label: 'Duplicate Page' },
+    { icon: <FileOutput size={15} />, label: 'Export Selected Pages' },
+  ]
+
+  return (
+    <div className="relative">
+      <button
+        className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded text-xs font-medium transition-colors select-none ${
+          disabled
+            ? 'opacity-30 cursor-not-allowed text-slate-400'
+            : 'hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer'
+        }`}
+        onClick={disabled ? undefined : () => setOpen(v => !v)}
+        title="Pages"
+      >
+        <span className="flex items-center gap-1">
+          Pages <ChevronDown size={13} />
+        </span>
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full mt-1 z-30 bg-slate-700 border border-slate-600 rounded shadow-lg min-w-max">
+            {items.map(({ icon, label }) => (
+              <button
+                key={label}
+                className="flex items-center gap-2 w-full px-3 py-2 text-xs text-slate-200 hover:bg-slate-600 hover:text-white transition-colors"
+                onClick={() => { setOpen(false); alert('Feature coming next') }}
+              >
+                {icon}
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
