@@ -3,7 +3,7 @@ import {
   FolderOpen, Type, PenLine, Highlighter, Pencil,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   RotateCcw, RotateCw, Trash2, Download, Eraser, ChevronDown,
-  FilePlus2, Scissors, Copy, FileOutput
+  FilePlus2, Scissors, Copy, FileOutput, RectangleHorizontal
 } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { ToolMode } from '../types'
@@ -100,6 +100,7 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       {toolBtn('signature', <PenLine size={18} />, 'Signature')}
       {toolBtn('draw', <Pencil size={18} />, 'Draw')}
       {toolBtn('highlight', <Highlighter size={18} />, 'Highlight')}
+      {toolBtn('whiteout', <RectangleHorizontal size={18} />, 'Delete Text')}
 
       {store.tool === 'draw' && <DrawOptions />}
       {store.tool === 'text' && <TextOptions />}

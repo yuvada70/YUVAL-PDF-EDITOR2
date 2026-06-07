@@ -36,11 +36,12 @@ export function SignatureModal({ onClose }: Props) {
           </button>
         </div>
 
-        <div className="border-2 border-slate-300 rounded-xl overflow-hidden bg-slate-50">
+        <div className="border-2 border-slate-300 rounded-xl overflow-hidden bg-white">
           <SignatureCanvas
             ref={sigRef}
             penColor="#1e293b"
-            canvasProps={{ width: 440, height: 200, className: 'block w-full' }}
+            backgroundColor="white"
+            canvasProps={{ width: 440, height: 200, className: 'block w-full', style: { background: 'white' } }}
           />
         </div>
         <p className="text-xs text-slate-400 mt-1 text-center">

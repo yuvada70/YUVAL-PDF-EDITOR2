@@ -4,7 +4,7 @@ import { loadPdfDocument, renderPageToCanvas } from '../utils/pdfRenderer'
 import { AnnotationLayer } from './AnnotationLayer'
 import { DrawLayer } from './DrawLayer'
 import { genId } from '../utils/id'
-import { TextAnnotation, SignatureAnnotation, HighlightAnnotation } from '../types'
+import { TextAnnotation, SignatureAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types'
 
 const RENDER_SCALE = 1.5
 
@@ -82,19 +82,31 @@ export function PdfViewer() {
   }, [store, getRelativePos])
 
   const handleHighlightMouseDown = useCallback((e: React.MouseEvent) => {
-    if (store.tool !== 'highlight') return
+    if (store.tool !== 'highlight' && store.tool !== 'whiteout') return
     const { x, y } = getRelativePos(e)
     const id = genId()
-    const ann: HighlightAnnotation = {
-      id,
-      type: 'highlight',
-      pageIndex: store.currentPage,
-      x, y,
-      width: 0,
-      height: 0,
-      color: '#facc15',
+    if (store.tool === 'whiteout') {
+      const ann: WhiteoutAnnotation = {
+        id,
+        type: 'whiteout',
+        pageIndex: store.currentPage,
+        x, y,
+        width: 0,
+        height: 0,
+      }
+      store.addAnnotation(ann)
+    } else {
+      const ann: HighlightAnnotation = {
+        id,
+        type: 'highlight',
+        pageIndex: store.currentPage,
+        x, y,
+        width: 0,
+        height: 0,
+        color: '#facc15',
+      }
+      store.addAnnotation(ann)
     }
-    store.addAnnotation(ann)
     highlightDragRef.current = { startX: x, startY: y, id }
   }, [store, getRelativePos])
 
@@ -117,6 +129,7 @@ export function PdfViewer() {
   const cursorStyle =
     store.tool === 'text' ? 'cursor-text'
     : store.tool === 'highlight' ? 'cursor-crosshair'
+    : store.tool === 'whiteout' ? 'cursor-crosshair'
     : store.tool === 'signature' && store.pendingSignatureDataUrl ? 'cursor-crosshair'
     : store.tool === 'draw' ? 'cursor-none'
     : 'cursor-default'

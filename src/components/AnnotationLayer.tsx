@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { useEditorStore } from '../store/editorStore'
-import { TextAnnotation, SignatureAnnotation, HighlightAnnotation } from '../types'
+import { TextAnnotation, SignatureAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types'
 import { X, GripHorizontal } from 'lucide-react'
 
 interface Props {
@@ -26,6 +26,9 @@ export function AnnotationLayer({ canvasWidth, canvasHeight }: Props) {
         }
         if (ann.type === 'highlight') {
           return <HighlightAnn key={ann.id} ann={ann as HighlightAnnotation} />
+        }
+        if (ann.type === 'whiteout') {
+          return <WhiteoutAnn key={ann.id} ann={ann as WhiteoutAnnotation} />
         }
         return null
       })}
@@ -181,6 +184,27 @@ function HighlightAnn({ ann }: { ann: HighlightAnnotation }) {
         backgroundColor: ann.color,
         opacity: 0.4,
         zIndex: 5,
+      }}
+      className="group cursor-pointer"
+      onDoubleClick={(e) => { e.stopPropagation(); store.removeAnnotation(ann.id) }}
+      title="Double-click to remove"
+    />
+  )
+}
+
+function WhiteoutAnn({ ann }: { ann: WhiteoutAnnotation }) {
+  const store = useEditorStore()
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: ann.x,
+        top: ann.y,
+        width: ann.width,
+        height: ann.height,
+        backgroundColor: 'white',
+        zIndex: 6,
+        border: '1px dashed #cbd5e1',
       }}
       className="group cursor-pointer"
       onDoubleClick={(e) => { e.stopPropagation(); store.removeAnnotation(ann.id) }}

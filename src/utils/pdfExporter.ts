@@ -1,5 +1,5 @@
 import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
-import { Annotation, TextAnnotation, SignatureAnnotation, DrawAnnotation, HighlightAnnotation } from '../types';
+import { Annotation, TextAnnotation, SignatureAnnotation, DrawAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types';
 import { loadPdfDocument } from './pdfRenderer';
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -115,6 +115,18 @@ export async function exportPdf(
           height: h.height * scaleY,
           color: rgb(r, g, b),
           opacity: 0.4,
+        });
+      } else if (ann.type === 'whiteout') {
+        const w = ann as WhiteoutAnnotation;
+        const pdfX = w.x * scaleX;
+        const pdfY = pageHeight - (w.y + w.height) * scaleY;
+        page.drawRectangle({
+          x: pdfX,
+          y: pdfY,
+          width: w.width * scaleX,
+          height: w.height * scaleY,
+          color: rgb(1, 1, 1),
+          opacity: 1,
         });
       }
     }
