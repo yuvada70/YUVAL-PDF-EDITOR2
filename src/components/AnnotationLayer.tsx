@@ -100,9 +100,11 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
 function SignatureAnn({ ann }: { ann: SignatureAnnotation }) {
   const store = useEditorStore()
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null)
+  const [selected, setSelected] = useState(false)
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
+    setSelected(true)
     dragRef.current = { startX: e.clientX, startY: e.clientY, origX: ann.x, origY: ann.y }
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return
@@ -118,6 +120,14 @@ function SignatureAnn({ ann }: { ann: SignatureAnnotation }) {
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        store.removeAnnotation(ann.id)
+        window.removeEventListener('keydown', onKeyDown)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
   }, [ann, store])
 
   return (
@@ -126,19 +136,18 @@ function SignatureAnn({ ann }: { ann: SignatureAnnotation }) {
       onMouseDown={onMouseDown}
       className="group cursor-move"
     >
-      <div className="absolute -top-5 left-0 hidden group-hover:flex gap-1 bg-white rounded shadow px-1 py-0.5 z-20">
-        <button
-          className="text-slate-400 hover:text-red-500"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={(e) => { e.stopPropagation(); store.removeAnnotation(ann.id) }}
-        >
-          <X size={12} />
-        </button>
-      </div>
+      <button
+        className="absolute -top-6 -right-1 z-20 bg-red-500 hover:bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center shadow opacity-0 group-hover:opacity-100 transition-opacity"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); store.removeAnnotation(ann.id) }}
+        title="מחק חתימה"
+      >
+        <X size={11} />
+      </button>
       <img
         src={ann.dataUrl}
         alt="Signature"
-        className="w-full h-full object-contain pointer-events-none select-none hover:outline hover:outline-blue-400 hover:outline-1 rounded"
+        className={`w-full h-full object-contain pointer-events-none select-none rounded ${selected ? 'outline outline-blue-400 outline-1' : 'group-hover:outline group-hover:outline-blue-400 group-hover:outline-1'}`}
         draggable={false}
       />
       {/* Resize handle */}
