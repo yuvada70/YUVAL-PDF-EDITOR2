@@ -83,9 +83,14 @@ export const useEditorStore = create<EditorState>((set) => ({
     set((s) => {
       const next = new Set(s.deletedPages);
       next.add(pageIndex);
-      const activePagesCount = s.totalPages - next.size;
-      const newPage = Math.min(s.currentPage, activePagesCount - 1);
-      return { deletedPages: next, currentPage: Math.max(0, newPage) };
+      // Find nearest active page after deletion
+      const active: number[] = [];
+      for (let i = 0; i < s.totalPages; i++) {
+        if (!next.has(i)) active.push(i);
+      }
+      // prefer the page after the deleted one, else the one before
+      const newPage = active.find(p => p > pageIndex) ?? active[active.length - 1] ?? 0;
+      return { deletedPages: next, currentPage: newPage };
     }),
 
   rotatePage: (pageIndex, direction) =>

@@ -80,19 +80,16 @@ function DrawTab({ onSave, onClose }: { onSave: (d: string) => void; onClose: ()
   const drawing = useRef(false)
   const last = useRef<{ x: number; y: number } | null>(null)
 
-  const fillWhite = useCallback(() => {
+  const clearCanvas = useCallback(() => {
     const c = canvasRef.current; if (!c) return
-    const ctx = c.getContext('2d')!
-    ctx.fillStyle = 'white'
-    ctx.fillRect(0, 0, c.width, c.height)
+    c.getContext('2d')!.clearRect(0, 0, c.width, c.height)
   }, [])
 
   useEffect(() => {
-    fillWhite()
     const ctx = canvasRef.current!.getContext('2d')!
     ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 2.5
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'
-  }, [fillWhite])
+  }, [])
 
   const getPos = (e: React.MouseEvent | React.TouchEvent) => {
     const c = canvasRef.current!
@@ -117,7 +114,7 @@ function DrawTab({ onSave, onClose }: { onSave: (d: string) => void; onClose: ()
   const isEmpty = () => {
     const c = canvasRef.current!
     return !c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data
-      .some((v, i) => i % 4 !== 3 && v !== 255)
+      .some((_, i) => i % 4 === 3 && _ > 0)
   }
 
   const handleSave = () => {
@@ -127,7 +124,9 @@ function DrawTab({ onSave, onClose }: { onSave: (d: string) => void; onClose: ()
 
   return (
     <>
-      <div className="border-2 border-slate-200 rounded-xl overflow-hidden">
+      {/* checkerboard bg shows canvas is transparent */}
+      <div className="border-2 border-slate-200 rounded-xl overflow-hidden"
+        style={{ background: 'repeating-conic-gradient(#e2e8f0 0% 25%, white 0% 50%) 0 0 / 16px 16px' }}>
         <canvas
           ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
           className="block w-full cursor-crosshair touch-none"
@@ -135,8 +134,8 @@ function DrawTab({ onSave, onClose }: { onSave: (d: string) => void; onClose: ()
           onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp}
         />
       </div>
-      <p className="text-xs text-slate-400 mt-1 text-center">Draw your signature above</p>
-      <Buttons onClear={fillWhite} onClose={onClose} onSave={handleSave} />
+      <p className="text-xs text-slate-400 mt-1 text-center">Draw your signature — background will be transparent</p>
+      <Buttons onClear={clearCanvas} onClose={onClose} onSave={handleSave} />
     </>
   )
 }
@@ -150,8 +149,7 @@ function TypeTab({ onSave, onClose }: { onSave: (d: string) => void; onClose: ()
   useEffect(() => {
     const c = canvasRef.current; if (!c) return
     const ctx = c.getContext('2d')!
-    ctx.fillStyle = 'white'
-    ctx.fillRect(0, 0, c.width, c.height)
+    ctx.clearRect(0, 0, c.width, c.height)
     if (!text) return
     ctx.fillStyle = '#1e293b'
     ctx.font = `48px '${font}', cursive`
@@ -191,10 +189,11 @@ function TypeTab({ onSave, onClose }: { onSave: (d: string) => void; onClose: ()
         ))}
       </div>
       {/* Preview */}
-      <div className="border-2 border-slate-200 rounded-xl overflow-hidden">
+      <div className="border-2 border-slate-200 rounded-xl overflow-hidden"
+        style={{ background: 'repeating-conic-gradient(#e2e8f0 0% 25%, white 0% 50%) 0 0 / 16px 16px' }}>
         <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H} className="block w-full" />
       </div>
-      <p className="text-xs text-slate-400 mt-1 text-center">Choose a style above</p>
+      <p className="text-xs text-slate-400 mt-1 text-center">Choose a style — background will be transparent</p>
       <Buttons onClear={() => setText('')} onClose={onClose} onSave={handleSave} />
     </>
   )
