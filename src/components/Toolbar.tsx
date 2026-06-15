@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import {
-  FolderOpen, Type, PenLine, Highlighter, Pencil,
+  FolderOpen, Type, Highlighter, Pencil,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   RotateCcw, RotateCw, Trash2, Download, Eraser, ChevronDown,
   FilePlus2, Scissors, Copy, FileOutput
@@ -97,7 +97,6 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       <Divider />
 
       {toolBtn('text', <Type size={18} />, 'Add Text')}
-      {toolBtn('signature', <PenLine size={18} />, 'Signature')}
       {toolBtn('draw', <Pencil size={18} />, 'Draw')}
       {toolBtn('highlight', <Highlighter size={18} />, 'Highlight')}
 
