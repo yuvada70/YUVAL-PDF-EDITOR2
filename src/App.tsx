@@ -12,9 +12,14 @@ export default function App() {
   const [showSignatureModal, setShowSignatureModal] = useState(false)
 
   const handleFile = useCallback(async (file: File) => {
-    const buffer = await file.arrayBuffer()
-    const doc = await loadPdfDocument(buffer)
-    setPdfFile(buffer, file.name, doc.numPages)
+    try {
+      const buffer = await file.arrayBuffer()
+      const doc = await loadPdfDocument(buffer)
+      setPdfFile(buffer, file.name, doc.numPages)
+    } catch (err) {
+      console.error('Failed to load PDF:', err)
+      alert('Failed to load PDF file. Please make sure the file is a valid PDF.')
+    }
   }, [setPdfFile])
 
   const handleToolSelect = useCallback((t: typeof tool) => {

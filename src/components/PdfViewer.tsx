@@ -21,14 +21,19 @@ export function PdfViewer() {
     let cancelled = false
     setLoading(true)
     void (async () => {
-      const doc = await loadPdfDocument(store.pdfFile!)
-      const rotation = store.pageRotations.get(store.currentPage) ?? 0
-      if (cancelled || !canvasRef.current) return
-      await renderPageToCanvas(doc, store.currentPage, canvasRef.current, RENDER_SCALE * store.zoom, rotation)
-      if (!cancelled && canvasRef.current) {
-        setCanvasSize({ width: canvasRef.current.width, height: canvasRef.current.height })
+      try {
+        const doc = await loadPdfDocument(store.pdfFile!)
+        const rotation = store.pageRotations.get(store.currentPage) ?? 0
+        if (cancelled || !canvasRef.current) return
+        await renderPageToCanvas(doc, store.currentPage, canvasRef.current, RENDER_SCALE * store.zoom, rotation)
+        if (!cancelled && canvasRef.current) {
+          setCanvasSize({ width: canvasRef.current.width, height: canvasRef.current.height })
+        }
+      } catch (err) {
+        console.error('PDF render error:', err)
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-      setLoading(false)
     })()
     return () => { cancelled = true }
   }, [store.pdfFile, store.currentPage, store.zoom, store.pageRotations])

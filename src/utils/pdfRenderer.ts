@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+// Use CDN worker URL to avoid bundling/MIME-type issues on static hosts like Vercel
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 let cachedDoc: pdfjsLib.PDFDocumentProxy | null = null;
 let cachedBuffer: ArrayBuffer | null = null;
