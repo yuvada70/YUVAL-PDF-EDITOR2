@@ -40,6 +40,7 @@ export function SignatureModal({ onClose }: Props) {
           <SignatureCanvas
             ref={sigRef}
             penColor="#1e293b"
+            backgroundColor="white"
             canvasProps={{ width: 440, height: 200, className: 'block w-full' }}
           />
         </div>

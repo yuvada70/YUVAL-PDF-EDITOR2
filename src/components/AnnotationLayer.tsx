@@ -82,6 +82,7 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
           style={{ fontSize: ann.fontSize, color: ann.color, minWidth: 80 }}
           value={ann.text}
           onChange={(e) => store.updateAnnotation(ann.id, { text: e.target.value })}
+          onFocus={(e) => e.target.select()}
           onBlur={() => setEditing(false)}
           onMouseDown={(e) => e.stopPropagation()}
         />
