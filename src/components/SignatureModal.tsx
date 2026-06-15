@@ -1,5 +1,4 @@
-import { useEffect, useRef } from 'react'
-import SignatureCanvas from 'react-signature-canvas'
+import { useCallback, useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { useEditorStore } from '../store/editorStore'
 
@@ -8,26 +7,76 @@ interface Props {
 }
 
 export function SignatureModal({ onClose }: Props) {
-  const sigRef = useRef<SignatureCanvas>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const drawing = useRef(false)
+  const lastPos = useRef<{ x: number; y: number } | null>(null)
   const { setTool, setPendingSignature } = useEditorStore()
 
-  useEffect(() => {
-    sigRef.current?.clear()
+  const fillWhite = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')!
+    ctx.fillStyle = 'white'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
   }, [])
 
+  useEffect(() => {
+    fillWhite()
+    const ctx = canvasRef.current!.getContext('2d')!
+    ctx.strokeStyle = '#1e293b'
+    ctx.lineWidth = 2.5
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+  }, [fillWhite])
+
+  const getPos = (e: React.MouseEvent | React.TouchEvent) => {
+    const canvas = canvasRef.current!
+    const rect = canvas.getBoundingClientRect()
+    const scaleX = canvas.width / rect.width
+    const scaleY = canvas.height / rect.height
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY }
+  }
+
+  const startDrawing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    drawing.current = true
+    lastPos.current = getPos(e)
+  }, [])
+
+  const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (!drawing.current || !lastPos.current) return
+    e.preventDefault()
+    const ctx = canvasRef.current!.getContext('2d')!
+    const pos = getPos(e)
+    ctx.beginPath()
+    ctx.moveTo(lastPos.current.x, lastPos.current.y)
+    ctx.lineTo(pos.x, pos.y)
+    ctx.stroke()
+    lastPos.current = pos
+  }, [])
+
+  const stopDrawing = useCallback(() => {
+    drawing.current = false
+    lastPos.current = null
+  }, [])
+
+  const handleClear = useCallback(() => {
+    fillWhite()
+  }, [fillWhite])
+
   const handleSave = () => {
-    if (!sigRef.current || sigRef.current.isEmpty()) {
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data
+    const isEmpty = !data.some((v, i) => i % 4 !== 3 && v !== 255)
+    if (isEmpty) {
       alert('Please draw a signature first.')
       return
     }
-    const dataUrl = sigRef.current.toDataURL('image/png')
-    setPendingSignature(dataUrl)
+    setPendingSignature(canvas.toDataURL('image/png'))
     setTool('signature')
     onClose()
-  }
-
-  const handleClear = () => {
-    sigRef.current?.clear()
   }
 
   return (
@@ -40,12 +89,19 @@ export function SignatureModal({ onClose }: Props) {
           </button>
         </div>
 
-        <div className="border-2 border-slate-300 rounded-xl overflow-hidden bg-slate-50">
-          <SignatureCanvas
-            ref={sigRef}
-            penColor="#1e293b"
-            backgroundColor="white"
-            canvasProps={{ width: 440, height: 200, className: 'block w-full', style: { background: 'white' } }}
+        <div className="border-2 border-slate-300 rounded-xl overflow-hidden">
+          <canvas
+            ref={canvasRef}
+            width={440}
+            height={200}
+            className="block w-full cursor-crosshair touch-none"
+            onMouseDown={startDrawing}
+            onMouseMove={draw}
+            onMouseUp={stopDrawing}
+            onMouseLeave={stopDrawing}
+            onTouchStart={startDrawing}
+            onTouchMove={draw}
+            onTouchEnd={stopDrawing}
           />
         </div>
         <p className="text-xs text-slate-400 mt-1 text-center">
