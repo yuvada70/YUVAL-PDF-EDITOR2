@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import SignatureCanvas from 'react-signature-canvas'
 import { X } from 'lucide-react'
 import { useEditorStore } from '../store/editorStore'
@@ -10,6 +10,10 @@ interface Props {
 export function SignatureModal({ onClose }: Props) {
   const sigRef = useRef<SignatureCanvas>(null)
   const { setTool, setPendingSignature } = useEditorStore()
+
+  useEffect(() => {
+    sigRef.current?.clear()
+  }, [])
 
   const handleSave = () => {
     if (!sigRef.current || sigRef.current.isEmpty()) {
@@ -41,7 +45,7 @@ export function SignatureModal({ onClose }: Props) {
             ref={sigRef}
             penColor="#1e293b"
             backgroundColor="white"
-            canvasProps={{ width: 440, height: 200, className: 'block w-full' }}
+            canvasProps={{ width: 440, height: 200, className: 'block w-full', style: { background: 'white' } }}
           />
         </div>
         <p className="text-xs text-slate-400 mt-1 text-center">
