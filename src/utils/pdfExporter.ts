@@ -14,16 +14,17 @@ export async function exportPdf(
   originalBuffer: ArrayBuffer,
   annotations: Annotation[],
   deletedPages: Set<number>,
-  pageRotations: Map<number, number>
+  pageRotations: Map<number, number>,
+  onlyOrigIndices?: number[]
 ): Promise<Uint8Array> {
   const srcDoc = await PDFDocument.load(originalBuffer);
   const totalPages = srcDoc.getPageCount();
 
   const outDoc = await PDFDocument.create();
-  const keepIndices: number[] = [];
-  for (let i = 0; i < totalPages; i++) {
-    if (!deletedPages.has(i)) keepIndices.push(i);
-  }
+  // Base set of pages to consider (all pages, or a caller-supplied subset),
+  // always excluding pages the user deleted.
+  const base = onlyOrigIndices ?? Array.from({ length: totalPages }, (_, i) => i);
+  const keepIndices = base.filter((i) => i >= 0 && i < totalPages && !deletedPages.has(i));
 
   const copiedPages = await outDoc.copyPages(srcDoc, keepIndices);
   copiedPages.forEach((p) => outDoc.addPage(p));

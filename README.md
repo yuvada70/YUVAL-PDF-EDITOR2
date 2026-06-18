@@ -15,6 +15,11 @@ A fully client-side PDF editor built with React 19, Vite, TypeScript, and Tailwi
 - **Highlight** – Drag to draw yellow highlight rectangles (50% opacity)
 - **Delete Page** – Remove the current page
 - **Rotate Page** – Rotate left or right
+- **Page operations** (the **Pages** menu):
+  - **Merge PDFs** – Append another PDF's pages to the end of the current one
+  - **Split PDF** – Split the document at the current page into two downloaded files
+  - **Duplicate Page** – Insert a copy of the current page (annotations included) right after it
+  - **Export Selected Pages** – Export a chosen page range (e.g. `1-3, 5`) to a new PDF
 - **Clear Annotations** – Remove all annotations at once
 - **Save / Export PDF** – Embeds all annotations into the PDF and downloads it
 

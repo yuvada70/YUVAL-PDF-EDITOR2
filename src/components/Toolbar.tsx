@@ -6,8 +6,10 @@ import {
   FilePlus2, Scissors, Copy, FileOutput, Ban
 } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
-import { ToolMode } from '../types'
+import { ToolMode, Annotation } from '../types'
 import { exportPdf } from '../utils/pdfExporter'
+import { appendPdf, duplicatePageInPdf, parsePageRanges, downloadPdfBytes } from '../utils/pageOps'
+import { genId } from '../utils/id'
 
 interface Props {
   onToolSelect: (tool: ToolMode) => void
@@ -158,27 +160,159 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
 
 function PagesDropdown({ disabled }: { disabled: boolean }) {
   const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const mergeInputRef = useRef<HTMLInputElement>(null)
+
+  // --- Merge: append another PDF's pages to the end of this document ---
+  const handleMergeFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const s = useEditorStore.getState()
+    if (!s.pdfFile) return
+    setBusy(true)
+    try {
+      const otherBuffer = await file.arrayBuffer()
+      const { buffer, addedCount } = await appendPdf(s.pdfFile, otherBuffer)
+      const firstNew = s.totalPages
+      useEditorStore.setState({
+        pdfFile: buffer,
+        totalPages: s.totalPages + addedCount,
+        currentPage: firstNew,
+      })
+    } catch (err) {
+      console.error('Merge failed', err)
+      alert('Merge failed. Make sure the selected file is a valid PDF.')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  // --- Duplicate the current page (inserts a copy right after it) ---
+  const handleDuplicate = useCallback(async () => {
+    const s = useEditorStore.getState()
+    if (!s.pdfFile) return
+    const cur = s.currentPage
+    setBusy(true)
+    try {
+      const buffer = await duplicatePageInPdf(s.pdfFile, cur)
+      const shift = (i: number) => (i > cur ? i + 1 : i)
+
+      // shift existing annotations down, then add copies on the new duplicate page
+      const shifted: Annotation[] = s.annotations.map((a) => ({ ...a, pageIndex: shift(a.pageIndex) }))
+      const dupes: Annotation[] = s.annotations
+        .filter((a) => a.pageIndex === cur)
+        .map((a) => ({ ...a, id: genId(), pageIndex: cur + 1 }))
+
+      const deletedPages = new Set<number>()
+      s.deletedPages.forEach((d) => deletedPages.add(shift(d)))
+
+      const pageRotations = new Map<number, number>()
+      s.pageRotations.forEach((v, k) => pageRotations.set(shift(k), v))
+      const curRot = s.pageRotations.get(cur)
+      if (curRot) pageRotations.set(cur + 1, curRot)
+
+      useEditorStore.setState({
+        pdfFile: buffer,
+        totalPages: s.totalPages + 1,
+        annotations: [...shifted, ...dupes],
+        deletedPages,
+        pageRotations,
+        currentPage: cur + 1,
+      })
+    } catch (err) {
+      console.error('Duplicate failed', err)
+      alert('Could not duplicate the page.')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  // --- Split: download two PDFs divided at the current page ---
+  const handleSplit = useCallback(async () => {
+    const s = useEditorStore.getState()
+    if (!s.pdfFile) return
+    const active = getActivePages(s)
+    const pos = active.indexOf(s.currentPage)
+    const part1 = active.slice(0, pos + 1)
+    const part2 = active.slice(pos + 1)
+    if (part2.length === 0) {
+      alert('Current page is the last page — nothing to split off. Move to an earlier page.')
+      return
+    }
+    setBusy(true)
+    try {
+      const baseName = s.pdfName.replace(/\.pdf$/i, '')
+      const b1 = await exportPdf(s.pdfFile, s.annotations, s.deletedPages, s.pageRotations, part1)
+      downloadPdfBytes(b1, `${baseName}_part1.pdf`)
+      const b2 = await exportPdf(s.pdfFile, s.annotations, s.deletedPages, s.pageRotations, part2)
+      downloadPdfBytes(b2, `${baseName}_part2.pdf`)
+    } catch (err) {
+      console.error('Split failed', err)
+      alert('Split failed. See console for details.')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  // --- Export an arbitrary selection of pages to a new PDF ---
+  const handleExportSelected = useCallback(async () => {
+    const s = useEditorStore.getState()
+    if (!s.pdfFile) return
+    const active = getActivePages(s)
+    const input = prompt(
+      `Which pages to export? (1-${active.length})\nExamples: 1-3, 5, 8`,
+      `1-${active.length}`
+    )
+    if (input === null) return
+    const visibleIdx = parsePageRanges(input, active.length)
+    if (!visibleIdx) {
+      alert('Could not understand the page selection. Try something like "1-3, 5".')
+      return
+    }
+    const origIndices = visibleIdx.map((v) => active[v])
+    setBusy(true)
+    try {
+      const baseName = s.pdfName.replace(/\.pdf$/i, '')
+      const bytes = await exportPdf(s.pdfFile, s.annotations, s.deletedPages, s.pageRotations, origIndices)
+      downloadPdfBytes(bytes, `${baseName}_pages.pdf`)
+    } catch (err) {
+      console.error('Export failed', err)
+      alert('Export failed. See console for details.')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const run = (fn: () => void | Promise<void>) => { setOpen(false); void fn() }
 
   const items = [
-    { icon: <FilePlus2 size={15} />, label: 'Merge PDFs' },
-    { icon: <Scissors size={15} />, label: 'Split PDF' },
-    { icon: <Copy size={15} />, label: 'Duplicate Page' },
-    { icon: <FileOutput size={15} />, label: 'Export Selected Pages' },
+    { icon: <FilePlus2 size={15} />, label: 'Merge PDFs', onClick: () => run(() => mergeInputRef.current?.click()) },
+    { icon: <Scissors size={15} />, label: 'Split PDF', onClick: () => run(handleSplit) },
+    { icon: <Copy size={15} />, label: 'Duplicate Page', onClick: () => run(handleDuplicate) },
+    { icon: <FileOutput size={15} />, label: 'Export Selected Pages', onClick: () => run(handleExportSelected) },
   ]
 
   return (
     <div className="relative">
+      <input
+        ref={mergeInputRef}
+        type="file"
+        accept="application/pdf"
+        className="hidden"
+        onChange={handleMergeFile}
+      />
       <button
         className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded text-xs font-medium transition-colors select-none ${
-          disabled
+          disabled || busy
             ? 'opacity-30 cursor-not-allowed text-slate-400'
             : 'hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer'
         }`}
-        onClick={disabled ? undefined : () => setOpen(v => !v)}
+        onClick={disabled || busy ? undefined : () => setOpen(v => !v)}
         title="Pages"
       >
         <span className="flex items-center gap-1">
-          Pages <ChevronDown size={13} />
+          {busy ? 'Working…' : 'Pages'} <ChevronDown size={13} />
         </span>
       </button>
 
@@ -186,11 +320,11 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
         <>
           <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
           <div className="absolute left-0 top-full mt-1 z-30 bg-slate-700 border border-slate-600 rounded shadow-lg min-w-max">
-            {items.map(({ icon, label }) => (
+            {items.map(({ icon, label, onClick }) => (
               <button
                 key={label}
                 className="flex items-center gap-2 w-full px-3 py-2 text-xs text-slate-200 hover:bg-slate-600 hover:text-white transition-colors"
-                onClick={() => { setOpen(false); alert('Feature coming next') }}
+                onClick={onClick}
               >
                 {icon}
                 {label}
