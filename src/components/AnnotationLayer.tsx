@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useEditorStore } from '../store/editorStore'
 import { TextAnnotation, SignatureAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types'
-import { X, GripHorizontal, Pencil } from 'lucide-react'
+import { X, GripHorizontal, Pencil, Minus, Plus } from 'lucide-react'
 
 interface Props {
   canvasWidth: number
@@ -96,23 +96,46 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
       className="group"
     >
       <div
-        className={`absolute -top-6 left-0 gap-1 bg-white rounded shadow px-1 py-0.5 ${
+        className={`absolute -top-7 left-0 items-center gap-1.5 bg-white rounded shadow px-1.5 py-1 ${
           selected ? 'flex' : 'hidden group-hover:flex'
         }`}
+        onMouseDown={(e) => e.stopPropagation()}
       >
         <button
           className="text-slate-400 hover:text-blue-600"
           title="ערוך טקסט"
-          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); store.setEditing(ann.id) }}
         >
           <Pencil size={12} />
+        </button>
+        {/* font color */}
+        <input
+          type="color"
+          value={ann.color}
+          title="צבע טקסט"
+          className="w-4 h-4 rounded cursor-pointer border-0 bg-transparent p-0"
+          onChange={(e) => store.updateAnnotation(ann.id, { color: e.target.value })}
+        />
+        {/* font size stepper */}
+        <button
+          className="text-slate-400 hover:text-blue-600"
+          title="הקטן גופן"
+          onClick={(e) => { e.stopPropagation(); store.updateAnnotation(ann.id, { fontSize: Math.max(6, ann.fontSize - 2) }) }}
+        >
+          <Minus size={12} />
+        </button>
+        <span className="text-[10px] text-slate-500 w-5 text-center tabular-nums select-none">{ann.fontSize}</span>
+        <button
+          className="text-slate-400 hover:text-blue-600"
+          title="הגדל גופן"
+          onClick={(e) => { e.stopPropagation(); store.updateAnnotation(ann.id, { fontSize: Math.min(120, ann.fontSize + 2) }) }}
+        >
+          <Plus size={12} />
         </button>
         <GripHorizontal size={12} className="text-slate-400 cursor-grab" />
         <button
           className="text-slate-400 hover:text-red-500"
           title="מחק"
-          onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => { e.stopPropagation(); store.removeAnnotation(ann.id) }}
         >
           <X size={12} />
