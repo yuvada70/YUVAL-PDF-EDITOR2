@@ -1,6 +1,8 @@
-import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
+import { PDFDocument, rgb, StandardFonts, degrees, PDFFont } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import { Annotation, TextAnnotation, SignatureAnnotation, DrawAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types';
 import { loadPdfDocument } from './pdfRenderer';
+import { loadUnicodeFontBytes, toVisualOrder } from './hebrewFont';
 
 function hexToRgb(hex: string): [number, number, number] {
   const clean = hex.replace('#', '');
@@ -39,7 +41,18 @@ export async function exportPdf(
     }
   }
 
-  const font = await outDoc.embedFont(StandardFonts.Helvetica);
+  // Prefer an embedded Unicode font so Hebrew (and other non-Latin) text
+  // exports correctly; fall back to Helvetica if the font can't be fetched.
+  let font: PDFFont;
+  let fontSupportsUnicode = false;
+  const unicodeBytes = await loadUnicodeFontBytes();
+  if (unicodeBytes) {
+    outDoc.registerFontkit(fontkit);
+    font = await outDoc.embedFont(unicodeBytes, { subset: true });
+    fontSupportsUnicode = true;
+  } else {
+    font = await outDoc.embedFont(StandardFonts.Helvetica);
+  }
   const pdfJsDoc = await loadPdfDocument(originalBuffer);
 
   for (let newIdx = 0; newIdx < keepIndices.length; newIdx++) {
@@ -69,13 +82,35 @@ export async function exportPdf(
         const pdfX = t.x * scaleX;
         const pdfY = pageHeight - t.y * scaleY - t.fontSize;
         const [r, g, b] = hexToRgb(t.color);
-        page.drawText(t.text, {
-          x: pdfX,
-          y: Math.max(0, pdfY),
-          size: t.fontSize * scaleX,
-          font,
-          color: rgb(r, g, b),
-        });
+        // Reorder right-to-left text into visual order when we have a font that
+        // can actually render it; otherwise keep logical order.
+        const drawText = fontSupportsUnicode ? toVisualOrder(t.text) : t.text;
+        try {
+          page.drawText(drawText, {
+            x: pdfX,
+            y: Math.max(0, pdfY),
+            size: t.fontSize * scaleX,
+            font,
+            color: rgb(r, g, b),
+            lineHeight: t.fontSize * scaleX,
+          });
+        } catch (err) {
+          // Helvetica fallback can't encode some characters — drop the
+          // unsupported ones rather than failing the whole export.
+          const safe = drawText.replace(/[^\x00-\xFF]/g, '');
+          if (safe) {
+            page.drawText(safe, {
+              x: pdfX,
+              y: Math.max(0, pdfY),
+              size: t.fontSize * scaleX,
+              font,
+              color: rgb(r, g, b),
+              lineHeight: t.fontSize * scaleX,
+            });
+          } else {
+            console.warn('Skipped text annotation that the export font cannot render', err);
+          }
+        }
       } else if (ann.type === 'signature') {
         const s = ann as SignatureAnnotation;
         try {

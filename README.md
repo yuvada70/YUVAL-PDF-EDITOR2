@@ -8,7 +8,7 @@ A fully client-side PDF editor built with React 19, Vite, TypeScript, and Tailwi
 - **Multi-page navigation** – Previous / Next with page counter
 - **Zoom** – In, Out, and Fit to page
 - **Page thumbnails** – Sidebar with live thumbnails
-- **Add Text** – Click anywhere to drop a text box that opens for typing immediately; drag to move, double-click or the ✎ button to re-edit, and press **Delete** to remove the selected box (empty boxes are discarded automatically)
+- **Add Text** – Click anywhere to drop a text box that opens for typing immediately; drag to move, double-click or the ✎ button to re-edit, and press **Delete** to remove the selected box (empty boxes are discarded automatically). Supports **Hebrew / RTL text**, which is embedded with a Unicode font and reordered correctly on export
 - **Erase / Cover Existing Content** – Drag a box over existing PDF text or images to cover ("white-out") it. Pick any cover color (white, black, …); the cover is draggable, resizable, and baked into the exported PDF
 - **Signature** – Draw a signature in a modal, then click to place it; resizable
 - **Freehand Drawing** – Pen tool with color and size selection; mouse and touch support
