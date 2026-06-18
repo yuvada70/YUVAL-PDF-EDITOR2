@@ -3,7 +3,7 @@ import {
   FolderOpen, Type, Highlighter, Pencil, PenLine,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   RotateCcw, RotateCw, Trash2, Download, Eraser, ChevronDown,
-  FilePlus2, Scissors, Copy, FileOutput
+  FilePlus2, Scissors, Copy, FileOutput, Ban
 } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { ToolMode } from '../types'
@@ -100,9 +100,11 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       {toolBtn('signature', <PenLine size={18} />, 'Signature')}
       {toolBtn('draw', <Pencil size={18} />, 'Draw')}
       {toolBtn('highlight', <Highlighter size={18} />, 'Highlight')}
+      {toolBtn('whiteout', <Eraser size={18} />, 'Erase Content')}
 
       {store.tool === 'draw' && <DrawOptions />}
       {store.tool === 'text' && <TextOptions />}
+      {store.tool === 'whiteout' && <WhiteoutOptions />}
 
       <Divider />
 
@@ -129,7 +131,7 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       <Divider />
 
       <ToolButton
-        icon={<Eraser size={18} />}
+        icon={<Ban size={18} />}
         label="Clear Annotations"
         onClick={() => {
           if (confirm('Clear all annotations on all pages?')) {
@@ -223,6 +225,32 @@ function TextOptions() {
       <label className="text-xs text-slate-300">Size</label>
       <input type="range" min={8} max={72} value={textFontSize} onChange={(e) => setTextFontSize(Number(e.target.value))} className="w-20" />
       <span className="text-xs text-slate-300">{textFontSize}px</span>
+    </div>
+  )
+}
+
+function WhiteoutOptions() {
+  const { whiteoutColor, setWhiteoutColor } = useEditorStore()
+  const swatches = ['#ffffff', '#000000', '#fde68a', '#cbd5e1']
+  return (
+    <div className="flex items-center gap-2 ml-1 bg-slate-700 rounded px-2 py-1">
+      <span className="text-xs text-slate-300">Drag over content to cover it</span>
+      <label className="text-xs text-slate-300">Color</label>
+      <input
+        type="color"
+        value={whiteoutColor}
+        onChange={(e) => setWhiteoutColor(e.target.value)}
+        className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent"
+      />
+      {swatches.map((c) => (
+        <button
+          key={c}
+          onClick={() => setWhiteoutColor(c)}
+          className={`w-4 h-4 rounded-sm border ${whiteoutColor === c ? 'ring-2 ring-blue-400' : 'border-slate-500'}`}
+          style={{ backgroundColor: c }}
+          title={c}
+        />
+      ))}
     </div>
   )
 }

@@ -3,7 +3,8 @@ export type ToolMode =
   | 'text'
   | 'signature'
   | 'draw'
-  | 'highlight';
+  | 'highlight'
+  | 'whiteout';
 
 export interface TextAnnotation {
   id: string;
@@ -47,11 +48,23 @@ export interface HighlightAnnotation {
   color: string;
 }
 
+export interface WhiteoutAnnotation {
+  id: string;
+  type: 'whiteout';
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+}
+
 export type Annotation =
   | TextAnnotation
   | SignatureAnnotation
   | DrawAnnotation
-  | HighlightAnnotation;
+  | HighlightAnnotation
+  | WhiteoutAnnotation;
 
 export interface PageRotation {
   pageIndex: number;

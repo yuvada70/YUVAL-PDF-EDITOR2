@@ -16,6 +16,9 @@ interface EditorState {
   drawLineWidth: number;
   textColor: string;
   textFontSize: number;
+  whiteoutColor: string;
+  selectedAnnotationId: string | null;
+  editingAnnotationId: string | null;
 
   setPdfFile: (buffer: ArrayBuffer, name: string, pages: number) => void;
   setCurrentPage: (page: number) => void;
@@ -24,6 +27,8 @@ interface EditorState {
   addAnnotation: (annotation: Annotation) => void;
   updateAnnotation: (id: string, patch: Partial<Annotation>) => void;
   removeAnnotation: (id: string) => void;
+  selectAnnotation: (id: string | null) => void;
+  setEditing: (id: string | null) => void;
   deletePage: (pageIndex: number) => void;
   rotatePage: (pageIndex: number, direction: 'left' | 'right') => void;
   setPendingSignature: (dataUrl: string | null) => void;
@@ -31,6 +36,7 @@ interface EditorState {
   setDrawLineWidth: (width: number) => void;
   setTextColor: (color: string) => void;
   setTextFontSize: (size: number) => void;
+  setWhiteoutColor: (color: string) => void;
 }
 
 export const useEditorStore = create<EditorState>((set) => ({
@@ -48,6 +54,9 @@ export const useEditorStore = create<EditorState>((set) => ({
   drawLineWidth: 3,
   textColor: '#1e293b',
   textFontSize: 16,
+  whiteoutColor: '#ffffff',
+  selectedAnnotationId: null,
+  editingAnnotationId: null,
 
   setPdfFile: (buffer, name, pages) =>
     set({
@@ -60,9 +69,12 @@ export const useEditorStore = create<EditorState>((set) => ({
       pageRotations: new Map(),
       tool: 'none',
       zoom: 1,
+      selectedAnnotationId: null,
+      editingAnnotationId: null,
     }),
 
-  setCurrentPage: (page) => set({ currentPage: page }),
+  setCurrentPage: (page) =>
+    set({ currentPage: page, selectedAnnotationId: null, editingAnnotationId: null }),
   setZoom: (zoom) => set({ zoom }),
   setTool: (tool) => set({ tool }),
 
@@ -77,7 +89,14 @@ export const useEditorStore = create<EditorState>((set) => ({
     })),
 
   removeAnnotation: (id) =>
-    set((s) => ({ annotations: s.annotations.filter((a) => a.id !== id) })),
+    set((s) => ({
+      annotations: s.annotations.filter((a) => a.id !== id),
+      selectedAnnotationId: s.selectedAnnotationId === id ? null : s.selectedAnnotationId,
+      editingAnnotationId: s.editingAnnotationId === id ? null : s.editingAnnotationId,
+    })),
+
+  selectAnnotation: (id) => set({ selectedAnnotationId: id }),
+  setEditing: (id) => set({ editingAnnotationId: id, selectedAnnotationId: id }),
 
   deletePage: (pageIndex) =>
     set((s) => {
@@ -107,6 +126,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   setDrawLineWidth: (width) => set({ drawLineWidth: width }),
   setTextColor: (color) => set({ textColor: color }),
   setTextFontSize: (size) => set({ textFontSize: size }),
+  setWhiteoutColor: (color) => set({ whiteoutColor: color }),
 }));
 
 // helper: get visible page list (excluding deleted)

@@ -1,5 +1,5 @@
 import { PDFDocument, rgb, StandardFonts, degrees } from 'pdf-lib';
-import { Annotation, TextAnnotation, SignatureAnnotation, DrawAnnotation, HighlightAnnotation } from '../types';
+import { Annotation, TextAnnotation, SignatureAnnotation, DrawAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types';
 import { loadPdfDocument } from './pdfRenderer';
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -45,7 +45,13 @@ export async function exportPdf(
     const origIdx = keepIndices[newIdx];
     const page = outDoc.getPage(newIdx);
     const { width: pageWidth, height: pageHeight } = page.getSize();
-    const pageAnnotations = annotations.filter((a) => a.pageIndex === origIdx);
+    // Draw in the same stacking order as on screen: highlight < whiteout < everything else,
+    // so a whiteout covers existing content but text/signatures placed on top stay visible.
+    const zRank = (t: Annotation['type']) => (t === 'highlight' ? 0 : t === 'whiteout' ? 1 : 2);
+    const pageAnnotations = annotations
+      .filter((a) => a.pageIndex === origIdx)
+      .slice()
+      .sort((a, b) => zRank(a.type) - zRank(b.type));
 
     const renderScale = 1.5;
     const pdfJsPage = await pdfJsDoc.getPage(origIdx + 1);
@@ -115,6 +121,18 @@ export async function exportPdf(
           height: h.height * scaleY,
           color: rgb(r, g, b),
           opacity: 0.4,
+        });
+      } else if (ann.type === 'whiteout') {
+        const w = ann as WhiteoutAnnotation;
+        const [r, g, b] = hexToRgb(w.color);
+        const pdfX = w.x * scaleX;
+        const pdfY = pageHeight - (w.y + w.height) * scaleY;
+        page.drawRectangle({
+          x: pdfX,
+          y: pdfY,
+          width: w.width * scaleX,
+          height: w.height * scaleY,
+          color: rgb(r, g, b),
         });
       }
     }

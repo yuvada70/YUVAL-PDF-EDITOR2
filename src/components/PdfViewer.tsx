@@ -4,7 +4,7 @@ import { loadPdfDocument, renderPageToCanvas } from '../utils/pdfRenderer'
 import { AnnotationLayer } from './AnnotationLayer'
 import { DrawLayer } from './DrawLayer'
 import { genId } from '../utils/id'
-import { TextAnnotation, SignatureAnnotation, HighlightAnnotation } from '../types'
+import { TextAnnotation, SignatureAnnotation, HighlightAnnotation, WhiteoutAnnotation } from '../types'
 
 const RENDER_SCALE = 1.5
 
@@ -38,8 +38,8 @@ export function PdfViewer() {
     return () => { cancelled = true }
   }, [store.pdfFile, store.currentPage, store.zoom, store.pageRotations])
 
-  // --- Highlight drag state ---
-  const highlightDragRef = useRef<{ startX: number; startY: number; id: string } | null>(null)
+  // --- Box drag state (highlight / whiteout) ---
+  const boxDragRef = useRef<{ startX: number; startY: number; id: string } | null>(null)
 
   const getRelativePos = useCallback((e: React.MouseEvent | React.TouchEvent): { x: number; y: number } => {
     const canvas = canvasRef.current!
@@ -58,17 +58,24 @@ export function PdfViewer() {
     if (!store.pdfFile) return
     if (store.tool === 'text') {
       const { x, y } = getRelativePos(e)
+      const id = genId()
       const ann: TextAnnotation = {
-        id: genId(),
+        id,
         type: 'text',
         pageIndex: store.currentPage,
         x, y,
-        text: 'Text',
+        text: '',
         fontSize: store.textFontSize,
         color: store.textColor,
       }
       store.addAnnotation(ann)
       store.setTool('none')
+      // immediately open the new text box for typing
+      store.setEditing(id)
+    } else if (store.tool === 'none') {
+      // clicking empty page area clears the current selection
+      store.selectAnnotation(null)
+      store.setEditing(null)
     } else if (store.tool === 'signature' && store.pendingSignatureDataUrl) {
       const { x, y } = getRelativePos(e)
       const ann: SignatureAnnotation = {
@@ -86,27 +93,30 @@ export function PdfViewer() {
     }
   }, [store, getRelativePos])
 
-  const handleHighlightMouseDown = useCallback((e: React.MouseEvent) => {
-    if (store.tool !== 'highlight') return
+  const handleBoxMouseDown = useCallback((e: React.MouseEvent) => {
+    if (store.tool !== 'highlight' && store.tool !== 'whiteout') return
     const { x, y } = getRelativePos(e)
     const id = genId()
-    const ann: HighlightAnnotation = {
-      id,
-      type: 'highlight',
-      pageIndex: store.currentPage,
-      x, y,
-      width: 0,
-      height: 0,
-      color: '#facc15',
+    if (store.tool === 'highlight') {
+      const ann: HighlightAnnotation = {
+        id, type: 'highlight', pageIndex: store.currentPage,
+        x, y, width: 0, height: 0, color: '#facc15',
+      }
+      store.addAnnotation(ann)
+    } else {
+      const ann: WhiteoutAnnotation = {
+        id, type: 'whiteout', pageIndex: store.currentPage,
+        x, y, width: 0, height: 0, color: store.whiteoutColor,
+      }
+      store.addAnnotation(ann)
     }
-    store.addAnnotation(ann)
-    highlightDragRef.current = { startX: x, startY: y, id }
+    boxDragRef.current = { startX: x, startY: y, id }
   }, [store, getRelativePos])
 
-  const handleHighlightMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!highlightDragRef.current) return
+  const handleBoxMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!boxDragRef.current) return
     const { x, y } = getRelativePos(e)
-    const { startX, startY, id } = highlightDragRef.current
+    const { startX, startY, id } = boxDragRef.current
     store.updateAnnotation(id, {
       x: Math.min(x, startX),
       y: Math.min(y, startY),
@@ -115,13 +125,20 @@ export function PdfViewer() {
     })
   }, [store, getRelativePos])
 
-  const handleHighlightMouseUp = useCallback(() => {
-    highlightDragRef.current = null
-  }, [])
+  const handleBoxMouseUp = useCallback(() => {
+    const drag = boxDragRef.current
+    boxDragRef.current = null
+    if (!drag) return
+    // discard accidental tiny boxes, otherwise keep the tool active for repeated use
+    const ann = useEditorStore.getState().annotations.find((a) => a.id === drag.id)
+    if (ann && 'width' in ann && (ann.width < 4 || ann.height < 4)) {
+      store.removeAnnotation(drag.id)
+    }
+  }, [store])
 
   const cursorStyle =
     store.tool === 'text' ? 'cursor-text'
-    : store.tool === 'highlight' ? 'cursor-crosshair'
+    : store.tool === 'highlight' || store.tool === 'whiteout' ? 'cursor-crosshair'
     : store.tool === 'signature' && store.pendingSignatureDataUrl ? 'cursor-crosshair'
     : store.tool === 'draw' ? 'cursor-none'
     : 'cursor-default'
@@ -138,9 +155,9 @@ export function PdfViewer() {
       )}
       <div
         className={`relative inline-block ${cursorStyle}`}
-        onMouseDown={handleHighlightMouseDown}
-        onMouseMove={handleHighlightMouseMove}
-        onMouseUp={handleHighlightMouseUp}
+        onMouseDown={handleBoxMouseDown}
+        onMouseMove={handleBoxMouseMove}
+        onMouseUp={handleBoxMouseUp}
         onClick={handleCanvasClick}
       >
         <canvas ref={canvasRef} className="pdf-page-canvas" />
