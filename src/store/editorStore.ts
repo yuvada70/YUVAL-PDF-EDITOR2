@@ -11,6 +11,7 @@ interface EditorState {
   annotations: Annotation[];
   deletedPages: Set<number>;
   pageRotations: Map<number, number>;
+  pageOrder: number[];
   pendingSignatureDataUrl: string | null;
   drawColor: string;
   drawLineWidth: number;
@@ -31,6 +32,7 @@ interface EditorState {
   setEditing: (id: string | null) => void;
   deletePage: (pageIndex: number) => void;
   rotatePage: (pageIndex: number, direction: 'left' | 'right') => void;
+  reorderPages: (draggedOrigIdx: number, targetOrigIdx: number) => void;
   setPendingSignature: (dataUrl: string | null) => void;
   setDrawColor: (color: string) => void;
   setDrawLineWidth: (width: number) => void;
@@ -49,6 +51,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   annotations: [],
   deletedPages: new Set(),
   pageRotations: new Map(),
+  pageOrder: [],
   pendingSignatureDataUrl: null,
   drawColor: '#e11d48',
   drawLineWidth: 3,
@@ -67,6 +70,7 @@ export const useEditorStore = create<EditorState>((set) => ({
       annotations: [],
       deletedPages: new Set(),
       pageRotations: new Map(),
+      pageOrder: Array.from({ length: pages }, (_, i) => i),
       tool: 'none',
       zoom: 1,
       selectedAnnotationId: null,
@@ -121,6 +125,18 @@ export const useEditorStore = create<EditorState>((set) => ({
       return { pageRotations: rotations };
     }),
 
+  reorderPages: (draggedOrigIdx, targetOrigIdx) =>
+    set((s) => {
+      if (draggedOrigIdx === targetOrigIdx) return {};
+      const order = [...s.pageOrder];
+      const from = order.indexOf(draggedOrigIdx);
+      const to = order.indexOf(targetOrigIdx);
+      if (from === -1 || to === -1) return {};
+      order.splice(from, 1);
+      order.splice(to, 0, draggedOrigIdx);
+      return { pageOrder: order };
+    }),
+
   setPendingSignature: (dataUrl) => set({ pendingSignatureDataUrl: dataUrl }),
   setDrawColor: (color) => set({ drawColor: color }),
   setDrawLineWidth: (width) => set({ drawLineWidth: width }),
@@ -129,11 +145,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   setWhiteoutColor: (color) => set({ whiteoutColor: color }),
 }));
 
-// helper: get visible page list (excluding deleted)
+// helper: get visible page list (excluding deleted), in the user's chosen display order
 export function getActivePages(state: EditorState): number[] {
-  const pages: number[] = [];
-  for (let i = 0; i < state.totalPages; i++) {
-    if (!state.deletedPages.has(i)) pages.push(i);
-  }
-  return pages;
+  return state.pageOrder.filter((i) => !state.deletedPages.has(i));
 }
