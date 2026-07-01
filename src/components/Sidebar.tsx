@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { RotateCcw, RotateCw, X } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { loadPdfDocument, getPageThumbnail, THUMB_SCALE } from '../utils/pdfRenderer'
 
@@ -13,7 +14,8 @@ export function Sidebar() {
   const renderingRef = useRef(false)
   const [draggedPage, setDraggedPage] = useState<number | null>(null)
   const [dragOverPage, setDragOverPage] = useState<number | null>(null)
-  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map())
+  const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set())
+  const itemRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const suppressClickRef = useRef(false)
   const dragOverRef = useRef<number | null>(null)
   const pointerState = useRef<{
@@ -110,55 +112,143 @@ export function Sidebar() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const toggleSelected = (pageIdx: number) => {
+    setSelectedPages((prev) => {
+      const next = new Set(prev)
+      if (next.has(pageIdx)) next.delete(pageIdx)
+      else next.add(pageIdx)
+      return next
+    })
+  }
+
+  const rotateSelected = (direction: 'left' | 'right') => {
+    store.rotatePages(Array.from(selectedPages), direction)
+  }
+
   return (
-    <div className="w-28 flex-shrink-0 bg-slate-200 border-r border-slate-300 overflow-y-auto flex flex-col gap-2 py-2 px-1">
-      {activePages.map((pageIdx, visibleIdx) => (
-        <button
-          key={pageIdx}
-          ref={(el) => {
-            if (el) itemRefs.current.set(pageIdx, el)
-            else itemRefs.current.delete(pageIdx)
-          }}
-          onClick={() => {
-            if (suppressClickRef.current) {
-              suppressClickRef.current = false
-              return
-            }
-            store.setCurrentPage(pageIdx)
-          }}
-          onPointerDown={(e) => {
-            if (e.button !== undefined && e.button !== 0) return
-            pointerState.current = {
-              pageIdx,
-              startX: e.clientX,
-              startY: e.clientY,
-              dragging: false,
-              pointerId: e.pointerId,
-            }
-            e.currentTarget.setPointerCapture?.(e.pointerId)
-          }}
-          style={{ touchAction: 'none' }}
-          className={`flex flex-col items-center gap-1 rounded p-1 transition-colors cursor-grab active:cursor-grabbing select-none ${
-            store.currentPage === pageIdx
-              ? 'ring-2 ring-blue-500 bg-white'
-              : 'hover:bg-slate-300 bg-white/60'
-          } ${dragOverPage === pageIdx ? 'ring-2 ring-blue-400' : ''} ${
-            draggedPage === pageIdx ? 'opacity-40' : ''
-          }`}
-        >
-          {thumbs.get(pageIdx) ? (
-            <img
-              src={thumbs.get(pageIdx)}
-              alt={`Page ${visibleIdx + 1}`}
-              className="w-full rounded shadow pointer-events-none"
-              draggable={false}
+    <div className="w-28 flex-shrink-0 bg-slate-200 border-r border-slate-300 flex flex-col">
+      {selectedPages.size > 0 && (
+        <div className="flex flex-col items-center gap-1 bg-slate-700 text-white px-1.5 py-1 text-xs flex-shrink-0">
+          <span>{selectedPages.size} נבחרו</span>
+          <div className="flex items-center gap-1">
+            <button
+              title="סובב שמאלה"
+              onClick={() => rotateSelected('left')}
+              className="p-0.5 rounded hover:bg-slate-600"
+            >
+              <RotateCcw size={13} />
+            </button>
+            <button
+              title="סובב ימינה"
+              onClick={() => rotateSelected('right')}
+              className="p-0.5 rounded hover:bg-slate-600"
+            >
+              <RotateCw size={13} />
+            </button>
+            <button
+              title="בטל בחירה"
+              onClick={() => setSelectedPages(new Set())}
+              className="p-0.5 rounded hover:bg-slate-600"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto flex flex-col gap-2 py-2 px-1">
+        {activePages.map((pageIdx, visibleIdx) => (
+          <div
+            key={pageIdx}
+            ref={(el) => {
+              if (el) itemRefs.current.set(pageIdx, el)
+              else itemRefs.current.delete(pageIdx)
+            }}
+            role="button"
+            tabIndex={0}
+            onClick={() => {
+              if (suppressClickRef.current) {
+                suppressClickRef.current = false
+                return
+              }
+              store.setCurrentPage(pageIdx)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                store.setCurrentPage(pageIdx)
+              }
+            }}
+            onPointerDown={(e) => {
+              if (e.button !== undefined && e.button !== 0) return
+              pointerState.current = {
+                pageIdx,
+                startX: e.clientX,
+                startY: e.clientY,
+                dragging: false,
+                pointerId: e.pointerId,
+              }
+              e.currentTarget.setPointerCapture?.(e.pointerId)
+            }}
+            style={{ touchAction: 'none' }}
+            className={`relative flex flex-col items-center gap-1 rounded p-1 transition-colors cursor-grab active:cursor-grabbing select-none ${
+              store.currentPage === pageIdx
+                ? 'ring-2 ring-blue-500 bg-white'
+                : 'hover:bg-slate-300 bg-white/60'
+            } ${dragOverPage === pageIdx ? 'ring-2 ring-blue-400' : ''} ${
+              draggedPage === pageIdx ? 'opacity-40' : ''
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={selectedPages.has(pageIdx)}
+              onChange={() => toggleSelected(pageIdx)}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="absolute top-1 left-1 z-10 cursor-pointer"
+              title="בחר עמוד"
             />
-          ) : (
-            <div className="w-full h-20 bg-slate-300 rounded animate-pulse" />
-          )}
-          <span className="text-xs text-slate-500">{visibleIdx + 1}</span>
-        </button>
-      ))}
+
+            <div
+              className="absolute top-0.5 right-0.5 z-10 flex gap-0.5"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <button
+                title="סובב שמאלה"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  store.rotatePages([pageIdx], 'left')
+                }}
+                className="p-0.5 rounded bg-white/80 hover:bg-white shadow"
+              >
+                <RotateCcw size={11} />
+              </button>
+              <button
+                title="סובב ימינה"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  store.rotatePages([pageIdx], 'right')
+                }}
+                className="p-0.5 rounded bg-white/80 hover:bg-white shadow"
+              >
+                <RotateCw size={11} />
+              </button>
+            </div>
+
+            {thumbs.get(pageIdx) ? (
+              <img
+                src={thumbs.get(pageIdx)}
+                alt={`Page ${visibleIdx + 1}`}
+                className="w-full rounded shadow pointer-events-none"
+                draggable={false}
+              />
+            ) : (
+              <div className="w-full h-20 bg-slate-300 rounded animate-pulse" />
+            )}
+            <span className="text-xs text-slate-500">{visibleIdx + 1}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

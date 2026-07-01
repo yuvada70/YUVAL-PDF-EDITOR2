@@ -31,7 +31,7 @@ interface EditorState {
   selectAnnotation: (id: string | null) => void;
   setEditing: (id: string | null) => void;
   deletePage: (pageIndex: number) => void;
-  rotatePage: (pageIndex: number, direction: 'left' | 'right') => void;
+  rotatePages: (pageIndices: number[], direction: 'left' | 'right') => void;
   reorderPages: (draggedOrigIdx: number, targetOrigIdx: number) => void;
   setPendingSignature: (dataUrl: string | null) => void;
   setDrawColor: (color: string) => void;
@@ -116,12 +116,14 @@ export const useEditorStore = create<EditorState>((set) => ({
       return { deletedPages: next, currentPage: newPage };
     }),
 
-  rotatePage: (pageIndex, direction) =>
+  rotatePages: (pageIndices, direction) =>
     set((s) => {
       const rotations = new Map(s.pageRotations);
-      const current = rotations.get(pageIndex) ?? 0;
       const delta = direction === 'left' ? -90 : 90;
-      rotations.set(pageIndex, (current + delta + 360) % 360);
+      for (const pageIndex of pageIndices) {
+        const current = rotations.get(pageIndex) ?? 0;
+        rotations.set(pageIndex, (current + delta + 360) % 360);
+      }
       return { pageRotations: rotations };
     }),
 
