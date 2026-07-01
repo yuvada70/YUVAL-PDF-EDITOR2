@@ -10,6 +10,7 @@ import { ToolMode, Annotation } from '../types'
 import { exportPdf } from '../utils/pdfExporter'
 import { appendPdf, duplicatePageInPdf, parsePageRanges, downloadPdfBytes } from '../utils/pageOps'
 import { genId } from '../utils/id'
+import { SplitModal } from './SplitModal'
 
 interface Props {
   onToolSelect: (tool: ToolMode) => void
@@ -44,7 +45,8 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
         store.pdfFile,
         store.annotations,
         store.deletedPages,
-        store.pageRotations
+        store.pageRotations,
+        getActivePages(store)
       )
       const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
@@ -161,6 +163,7 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
 function PagesDropdown({ disabled }: { disabled: boolean }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [showSplitModal, setShowSplitModal] = useState(false)
   const mergeInputRef = useRef<HTMLInputElement>(null)
 
   // --- Merge: append another PDF's pages to the end of this document ---
@@ -175,9 +178,11 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
       const otherBuffer = await file.arrayBuffer()
       const { buffer, addedCount } = await appendPdf(s.pdfFile, otherBuffer)
       const firstNew = s.totalPages
+      const newPages = Array.from({ length: addedCount }, (_, i) => firstNew + i)
       useEditorStore.setState({
         pdfFile: buffer,
         totalPages: s.totalPages + addedCount,
+        pageOrder: [...s.pageOrder, ...newPages],
         currentPage: firstNew,
       })
     } catch (err) {
@@ -212,44 +217,23 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
       const curRot = s.pageRotations.get(cur)
       if (curRot) pageRotations.set(cur + 1, curRot)
 
+      const shiftedOrder = s.pageOrder.map(shift)
+      const insertAt = shiftedOrder.indexOf(cur) + 1
+      const pageOrder = [...shiftedOrder]
+      pageOrder.splice(insertAt, 0, cur + 1)
+
       useEditorStore.setState({
         pdfFile: buffer,
         totalPages: s.totalPages + 1,
         annotations: [...shifted, ...dupes],
         deletedPages,
         pageRotations,
+        pageOrder,
         currentPage: cur + 1,
       })
     } catch (err) {
       console.error('Duplicate failed', err)
       alert('Could not duplicate the page.')
-    } finally {
-      setBusy(false)
-    }
-  }, [])
-
-  // --- Split: download two PDFs divided at the current page ---
-  const handleSplit = useCallback(async () => {
-    const s = useEditorStore.getState()
-    if (!s.pdfFile) return
-    const active = getActivePages(s)
-    const pos = active.indexOf(s.currentPage)
-    const part1 = active.slice(0, pos + 1)
-    const part2 = active.slice(pos + 1)
-    if (part2.length === 0) {
-      alert('Current page is the last page — nothing to split off. Move to an earlier page.')
-      return
-    }
-    setBusy(true)
-    try {
-      const baseName = s.pdfName.replace(/\.pdf$/i, '')
-      const b1 = await exportPdf(s.pdfFile, s.annotations, s.deletedPages, s.pageRotations, part1)
-      downloadPdfBytes(b1, `${baseName}_part1.pdf`)
-      const b2 = await exportPdf(s.pdfFile, s.annotations, s.deletedPages, s.pageRotations, part2)
-      downloadPdfBytes(b2, `${baseName}_part2.pdf`)
-    } catch (err) {
-      console.error('Split failed', err)
-      alert('Split failed. See console for details.')
     } finally {
       setBusy(false)
     }
@@ -288,7 +272,7 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
 
   const items = [
     { icon: <FilePlus2 size={15} />, label: 'Merge PDFs', onClick: () => run(() => mergeInputRef.current?.click()) },
-    { icon: <Scissors size={15} />, label: 'Split PDF', onClick: () => run(handleSplit) },
+    { icon: <Scissors size={15} />, label: 'Split PDF', onClick: () => run(() => setShowSplitModal(true)) },
     { icon: <Copy size={15} />, label: 'Duplicate Page', onClick: () => run(handleDuplicate) },
     { icon: <FileOutput size={15} />, label: 'Export Selected Pages', onClick: () => run(handleExportSelected) },
   ]
@@ -302,6 +286,7 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
         className="hidden"
         onChange={handleMergeFile}
       />
+      {showSplitModal && <SplitModal onClose={() => setShowSplitModal(false)} />}
       <button
         className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded text-xs font-medium transition-colors select-none ${
           disabled || busy

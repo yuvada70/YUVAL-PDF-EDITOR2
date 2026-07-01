@@ -82,3 +82,34 @@ export function parsePageRanges(input: string, max: number): number[] | null {
   }
   return out.size ? Array.from(out).sort((a, b) => a - b) : null;
 }
+
+/**
+ * Parse a comma-separated list of 1-based ranges/pages into separate groups,
+ * one per output file, e.g. "1-3, 5, 8-9" (max 9) -> [[0,1,2],[4],[7,8]].
+ * Returns null if any group is invalid or out of bounds.
+ */
+export function parseRangeGroups(input: string, max: number): number[][] | null {
+  const groups: number[][] = [];
+  for (const partRaw of input.split(',')) {
+    const part = partRaw.trim();
+    if (!part) continue;
+    const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+    const single = part.match(/^(\d+)$/);
+    if (range) {
+      let from = parseInt(range[1], 10);
+      let to = parseInt(range[2], 10);
+      if (from > to) [from, to] = [to, from];
+      if (from < 1 || to > max) return null;
+      const group: number[] = [];
+      for (let n = from; n <= to; n++) group.push(n - 1);
+      groups.push(group);
+    } else if (single) {
+      const n = parseInt(single[1], 10);
+      if (n < 1 || n > max) return null;
+      groups.push([n - 1]);
+    } else {
+      return null;
+    }
+  }
+  return groups.length ? groups : null;
+}

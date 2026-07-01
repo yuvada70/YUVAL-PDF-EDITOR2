@@ -42,3 +42,32 @@ export async function renderPageToDataUrl(
   await renderPageToCanvas(doc, pageIndex, canvas, scale, rotation);
   return canvas.toDataURL('image/png');
 }
+
+// Shared thumbnail scale so callers hit the same cache entries.
+export const THUMB_SCALE = 0.2;
+
+// pdf.js can't render the same page to two canvases concurrently without
+// interference, so any UI needing thumbnails (Sidebar, split dialog, ...)
+// should go through this shared, deduplicated cache instead of calling
+// renderPageToDataUrl directly.
+const thumbnailCache = new WeakMap<pdfjsLib.PDFDocumentProxy, Map<string, Promise<string>>>();
+
+export function getPageThumbnail(
+  doc: pdfjsLib.PDFDocumentProxy,
+  pageIndex: number,
+  scale: number,
+  rotation: number
+): Promise<string> {
+  let docCache = thumbnailCache.get(doc);
+  if (!docCache) {
+    docCache = new Map();
+    thumbnailCache.set(doc, docCache);
+  }
+  const key = `${pageIndex}:${scale}:${rotation}`;
+  let promise = docCache.get(key);
+  if (!promise) {
+    promise = renderPageToDataUrl(doc, pageIndex, scale, rotation);
+    docCache.set(key, promise);
+  }
+  return promise;
+}
