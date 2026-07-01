@@ -115,13 +115,13 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       <ToolButton
         icon={<RotateCcw size={18} />}
         label="Rotate Left"
-        onClick={() => store.rotatePage(store.currentPage, 'left')}
+        onClick={() => store.rotatePages([store.currentPage], 'left')}
         disabled={!store.pdfFile}
       />
       <ToolButton
         icon={<RotateCw size={18} />}
         label="Rotate Right"
-        onClick={() => store.rotatePage(store.currentPage, 'right')}
+        onClick={() => store.rotatePages([store.currentPage], 'right')}
         disabled={!store.pdfFile}
       />
       <ToolButton
