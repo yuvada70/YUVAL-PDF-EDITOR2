@@ -62,8 +62,10 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
     store.selectAnnotation(ann.id)
     if (editing) return
     dragRef.current = { startX: e.clientX, startY: e.clientY, origX: ann.x, origY: ann.y }
+    let committed = false
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return
+      if (!committed) { committed = true; store.commit() }
       store.updateAnnotation(ann.id, {
         x: dragRef.current.origX + ev.clientX - dragRef.current.startX,
         y: dragRef.current.origY + ev.clientY - dragRef.current.startY,
@@ -92,7 +94,7 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
       style={{ position: 'absolute', left: ann.x, top: ann.y, zIndex: 10 }}
       onMouseDown={onMouseDown}
       onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => { e.stopPropagation(); store.setEditing(ann.id) }}
+      onDoubleClick={(e) => { e.stopPropagation(); store.commit(); store.setEditing(ann.id) }}
       className="group"
     >
       <div
@@ -104,7 +106,7 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
         <button
           className="text-slate-400 hover:text-blue-600"
           title="ערוך טקסט"
-          onClick={(e) => { e.stopPropagation(); store.setEditing(ann.id) }}
+          onClick={(e) => { e.stopPropagation(); store.commit(); store.setEditing(ann.id) }}
         >
           <Pencil size={12} />
         </button>
@@ -114,13 +116,14 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
           value={ann.color}
           title="צבע טקסט"
           className="w-4 h-4 rounded cursor-pointer border-0 bg-transparent p-0"
+          onFocus={() => store.commit()}
           onChange={(e) => store.updateAnnotation(ann.id, { color: e.target.value })}
         />
         {/* font size stepper */}
         <button
           className="text-slate-400 hover:text-blue-600"
           title="הקטן גופן"
-          onClick={(e) => { e.stopPropagation(); store.updateAnnotation(ann.id, { fontSize: Math.max(6, ann.fontSize - 2) }) }}
+          onClick={(e) => { e.stopPropagation(); store.commit(); store.updateAnnotation(ann.id, { fontSize: Math.max(6, ann.fontSize - 2) }) }}
         >
           <Minus size={12} />
         </button>
@@ -128,7 +131,7 @@ function TextAnn({ ann }: { ann: TextAnnotation }) {
         <button
           className="text-slate-400 hover:text-blue-600"
           title="הגדל גופן"
-          onClick={(e) => { e.stopPropagation(); store.updateAnnotation(ann.id, { fontSize: Math.min(120, ann.fontSize + 2) }) }}
+          onClick={(e) => { e.stopPropagation(); store.commit(); store.updateAnnotation(ann.id, { fontSize: Math.min(120, ann.fontSize + 2) }) }}
         >
           <Plus size={12} />
         </button>
@@ -179,8 +182,10 @@ function SignatureAnn({ ann }: { ann: SignatureAnnotation }) {
     e.stopPropagation()
     store.selectAnnotation(ann.id)
     dragRef.current = { startX: e.clientX, startY: e.clientY, origX: ann.x, origY: ann.y }
+    let committed = false
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return
+      if (!committed) { committed = true; store.commit() }
       store.updateAnnotation(ann.id, {
         x: dragRef.current.origX + ev.clientX - dragRef.current.startX,
         y: dragRef.current.origY + ev.clientY - dragRef.current.startY,
@@ -228,6 +233,7 @@ function SignatureAnn({ ann }: { ann: SignatureAnnotation }) {
         className="absolute bottom-0 right-0 w-3 h-3 bg-blue-500 rounded-sm cursor-se-resize opacity-0 group-hover:opacity-100"
         onMouseDown={(e) => {
           e.stopPropagation()
+          store.commit()
           const startX = e.clientX
           const startY = e.clientY
           const origW = ann.width
@@ -280,8 +286,10 @@ function WhiteoutAnn({ ann }: { ann: WhiteoutAnnotation }) {
     e.stopPropagation()
     store.selectAnnotation(ann.id)
     dragRef.current = { startX: e.clientX, startY: e.clientY, origX: ann.x, origY: ann.y }
+    let committed = false
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return
+      if (!committed) { committed = true; store.commit() }
       store.updateAnnotation(ann.id, {
         x: dragRef.current.origX + ev.clientX - dragRef.current.startX,
         y: dragRef.current.origY + ev.clientY - dragRef.current.startY,
@@ -333,6 +341,7 @@ function WhiteoutAnn({ ann }: { ann: WhiteoutAnnotation }) {
         className="absolute bottom-0 right-0 w-3 h-3 bg-blue-500 rounded-sm cursor-se-resize opacity-0 group-hover:opacity-100"
         onMouseDown={(e) => {
           e.stopPropagation()
+          store.commit()
           const startX = e.clientX
           const startY = e.clientY
           const origW = ann.width

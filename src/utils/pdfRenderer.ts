@@ -25,7 +25,14 @@ export async function renderPageToCanvas(
   rotation: number
 ): Promise<void> {
   const page = await doc.getPage(pageIndex + 1);
-  const viewport = page.getViewport({ scale, rotation });
+  // `rotation` is the additional rotation the user applied in-app; pdf.js's
+  // getViewport() replaces (rather than adds to) the page's own intrinsic
+  // /Rotate value when a rotation is passed explicitly, so without this the
+  // page's built-in orientation (e.g. a scan authored to display upright via
+  // /Rotate) would be silently discarded and the page could default to
+  // landscape instead of portrait.
+  const effectiveRotation = (page.rotate + rotation + 360) % 360;
+  const viewport = page.getViewport({ scale, rotation: effectiveRotation });
   const ctx = canvas.getContext('2d')!;
   canvas.width = viewport.width;
   canvas.height = viewport.height;

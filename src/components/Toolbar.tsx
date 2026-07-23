@@ -3,7 +3,7 @@ import {
   FolderOpen, Type, Highlighter, Pencil, PenLine,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   RotateCcw, RotateCw, Trash2, Download, Eraser, ChevronDown,
-  FilePlus2, Scissors, Copy, FileOutput, Ban
+  FilePlus2, Scissors, Copy, FileOutput, Ban, Undo2, Redo2
 } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { ToolMode, Annotation } from '../types'
@@ -85,6 +85,21 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
 
       <Divider />
 
+      <ToolButton
+        icon={<Undo2 size={18} />}
+        label="Undo"
+        onClick={() => store.undo()}
+        disabled={!store.pdfFile || store.past.length === 0}
+      />
+      <ToolButton
+        icon={<Redo2 size={18} />}
+        label="Redo"
+        onClick={() => store.redo()}
+        disabled={!store.pdfFile || store.future.length === 0}
+      />
+
+      <Divider />
+
       <ToolButton icon={<ChevronLeft size={18} />} label="Prev" onClick={() => goPage(-1)} disabled={!canPrev} />
       <span className="text-xs text-slate-300 px-1 whitespace-nowrap">
         {store.pdfFile ? `${currentVisibleIdx + 1} / ${activePages.length}` : '—'}
@@ -115,13 +130,13 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
       <ToolButton
         icon={<RotateCcw size={18} />}
         label="Rotate Left"
-        onClick={() => store.rotatePage(store.currentPage, 'left')}
+        onClick={() => store.rotatePages([store.currentPage], 'left')}
         disabled={!store.pdfFile}
       />
       <ToolButton
         icon={<RotateCw size={18} />}
         label="Rotate Right"
-        onClick={() => store.rotatePage(store.currentPage, 'right')}
+        onClick={() => store.rotatePages([store.currentPage], 'right')}
         disabled={!store.pdfFile}
       />
       <ToolButton
@@ -139,6 +154,7 @@ export function Toolbar({ onToolSelect, onFileOpen }: Props) {
         label="Clear Annotations"
         onClick={() => {
           if (confirm('Clear all annotations on all pages?')) {
+            store.commit()
             useEditorStore.setState({ annotations: [] })
           }
         }}
@@ -179,6 +195,7 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
       const { buffer, addedCount } = await appendPdf(s.pdfFile, otherBuffer)
       const firstNew = s.totalPages
       const newPages = Array.from({ length: addedCount }, (_, i) => firstNew + i)
+      useEditorStore.getState().commit()
       useEditorStore.setState({
         pdfFile: buffer,
         totalPages: s.totalPages + addedCount,
@@ -222,6 +239,7 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
       const pageOrder = [...shiftedOrder]
       pageOrder.splice(insertAt, 0, cur + 1)
 
+      useEditorStore.getState().commit()
       useEditorStore.setState({
         pdfFile: buffer,
         totalPages: s.totalPages + 1,
