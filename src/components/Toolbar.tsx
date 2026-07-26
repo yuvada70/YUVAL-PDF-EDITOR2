@@ -3,12 +3,13 @@ import {
   FolderOpen, Type, Highlighter, Pencil, PenLine,
   ZoomIn, ZoomOut, Maximize2, ChevronLeft, ChevronRight,
   RotateCcw, RotateCw, Trash2, Download, Eraser, ChevronDown,
-  FilePlus2, Scissors, Copy, FileOutput, Ban, Undo2, Redo2
+  FilePlus2, Scissors, Copy, FileOutput, Ban, Undo2, Redo2, FileText
 } from 'lucide-react'
 import { useEditorStore, getActivePages } from '../store/editorStore'
 import { ToolMode, Annotation } from '../types'
 import { exportPdf } from '../utils/pdfExporter'
 import { appendPdf, duplicatePageInPdf, parsePageRanges, downloadPdfBytes } from '../utils/pageOps'
+import { exportToWord } from '../utils/wordExporter'
 import { genId } from '../utils/id'
 import { SplitModal } from './SplitModal'
 
@@ -286,6 +287,28 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
     }
   }, [])
 
+  // --- Convert the document's text content to an editable Word file ---
+  const handleConvertToWord = useCallback(async () => {
+    const s = useEditorStore.getState()
+    if (!s.pdfFile) return
+    setBusy(true)
+    try {
+      const baseName = s.pdfName.replace(/\.pdf$/i, '')
+      const blob = await exportToWord(s.pdfFile, getActivePages(s))
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${baseName}.docx`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Word conversion failed', err)
+      alert('Could not convert this PDF to Word. See console for details.')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
   const run = (fn: () => void | Promise<void>) => { setOpen(false); void fn() }
 
   const items = [
@@ -293,6 +316,7 @@ function PagesDropdown({ disabled }: { disabled: boolean }) {
     { icon: <Scissors size={15} />, label: 'Split PDF', onClick: () => run(() => setShowSplitModal(true)) },
     { icon: <Copy size={15} />, label: 'Duplicate Page', onClick: () => run(handleDuplicate) },
     { icon: <FileOutput size={15} />, label: 'Export Selected Pages', onClick: () => run(handleExportSelected) },
+    { icon: <FileText size={15} />, label: 'Convert to Word (.docx)', onClick: () => run(handleConvertToWord) },
   ]
 
   return (
