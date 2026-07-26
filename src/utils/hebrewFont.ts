@@ -36,7 +36,7 @@ export function loadUnicodeFontBytes(): Promise<ArrayBuffer | null> {
   return fontPromise;
 }
 
-const RTL_RE = /[֐-׿יִ-ﭏ]/;
+export const RTL_RE = /[֐-׿יִ-ﭏ]/;
 
 function charClass(ch: string): 'R' | 'L' | 'N' {
   if (/[֐-׿יִ-ﭏ]/.test(ch)) return 'R';
