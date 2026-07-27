@@ -55,11 +55,32 @@ interface FontInfo {
   name: string;
 }
 
-/** Reads real bold/italic/name from the font object pdf.js resolved while
- * building the operator list — far more reliable than getTextContent()'s own
- * `styles` map, which collapses every embedded/subsetted font down to a
- * generic CSS fallback like "sans-serif". Must only be called after
- * page.getOperatorList() has resolved, since that's what populates
+// pdf.js's own `bold`/`italic` fields on a resolved font object are only
+// ever populated when it fell back to a system font (missing/unparseable
+// embedded font data) — for a normally-embedded font, which is the common
+// case, both fields are simply `undefined`, and pdf.js does not expose the
+// embedded font's actual weight/style through its public API at all (the
+// converted font binary that would let something like fontkit inspect the
+// OS/2 table isn't included in the object it hands to the main thread).
+// The resolved PostScript name (e.g. the subsetted "BCDFEE+David-Bold") is
+// therefore the only per-font signal available, and in practice PDF
+// producers name a font's actual embedded weight/style variant accurately
+// (a resource named "...-Bold" *is* the bold cut of the typeface, embedded
+// specifically because that run needed to be bold) — it just needs to be
+// read directly instead of relying on pdf.js's own name check, which only
+// runs on the fallback path and therefore never fires for embedded fonts.
+const BOLD_NAME_RE = /bold|black|heavy|semibold|extrabold|[-,_ ]bd$/i;
+const ITALIC_NAME_RE = /italic|oblique|[-,_ ]it$/i;
+
+function inferStyleFromFontName(name: string): { bold: boolean; italic: boolean } {
+  // Strip the 6-letter ABCDEF+ subset tag PDF producers prepend to embedded
+  // font names so it can't accidentally match one of the style keywords.
+  const stripped = name.replace(/^[A-Z]{6}\+/, '');
+  return { bold: BOLD_NAME_RE.test(stripped), italic: ITALIC_NAME_RE.test(stripped) };
+}
+
+/** Reads bold/italic/name for a font used on the page. Must only be called
+ * after page.getOperatorList() has resolved, since that's what populates
  * page.commonObjs. */
 function getFontInfo(page: pdfjsLib.PDFPageProxy, fontName: string, cache: Map<string, FontInfo>): FontInfo {
   const cached = cache.get(fontName);
@@ -68,7 +89,9 @@ function getFontInfo(page: pdfjsLib.PDFPageProxy, fontName: string, cache: Map<s
   try {
     if (page.commonObjs.has(fontName)) {
       const obj = page.commonObjs.get(fontName) as { bold?: boolean; italic?: boolean; name?: string; fallbackName?: string };
-      info = { bold: !!obj.bold, italic: !!obj.italic, name: obj.name || obj.fallbackName || fontName };
+      const resolvedName = obj.name || obj.fallbackName || fontName;
+      const inferred = inferStyleFromFontName(resolvedName);
+      info = { bold: !!obj.bold || inferred.bold, italic: !!obj.italic || inferred.italic, name: resolvedName };
     }
   } catch {
     // Font object not resolved yet — fall back to the default (regular) style.
@@ -142,6 +165,7 @@ interface Run {
   text: string;
   bold: boolean;
   italic: boolean;
+  underline: boolean;
   color: string;
   fontSize: number;
   fontFamily: string;
@@ -165,6 +189,7 @@ interface Span {
   height: number;
   bold: boolean;
   italic: boolean;
+  underline: boolean;
   color: string;
   fontFamily: string;
 }
@@ -251,6 +276,52 @@ function extractLineSegments(opList: OperatorList, viewport: pdfjsLib.PageViewpo
     }
   }
   return segments;
+}
+
+const UNDERLINE_RECT_MAX_HEIGHT = 3; // pt
+
+/**
+ * Underline decorations are very commonly drawn as a single thin *filled*
+ * rectangle rather than a stroked line (PDF producers do this so the bar's
+ * thickness is exact regardless of viewer line-width rounding) — a shape
+ * extractLineSegments deliberately ignores, since accepting any filled path
+ * there would also pull in filled glyph outlines and clip regions. This
+ * narrowly matches only a lone rectangle op that's actually painted (filled
+ * or stroked) and geometrically thin, which glyph outlines (built from
+ * curves) and clip rectangles (never painted) don't satisfy.
+ */
+function extractUnderlineRects(opList: OperatorList, viewport: pdfjsLib.PageViewport): LineSegment[] {
+  void viewport;
+  const OPS = pdfjsLib.OPS;
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  const rects: LineSegment[] = [];
+  const PAINT_OPS = new Set([OPS.fill, OPS.eoFill, OPS.stroke, OPS.closeStroke, OPS.fillStroke, OPS.eoFillStroke]);
+
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    const fn = opList.fnArray[i];
+    if (fn === OPS.save) {
+      stack.push(ctm);
+    } else if (fn === OPS.restore) {
+      ctm = stack.pop() ?? ctm;
+    } else if (fn === OPS.transform) {
+      ctm = multiplyMatrix(opList.argsArray[i] as Matrix, ctm);
+    } else if (fn === OPS.constructPath) {
+      const [opCodes, coords] = opList.argsArray[i] as [number[], number[], number[]];
+      if (opCodes.length !== 1 || opCodes[0] !== OPS.rectangle || !PAINT_OPS.has(opList.fnArray[i + 1])) continue;
+      const [rx, ry, rw, rh] = coords;
+      const corners = [[rx, ry], [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh]].map(([x, y]) => applyMatrix(ctm, x, y));
+      const xs = corners.map((c) => c[0]);
+      const ys = corners.map((c) => c[1]);
+      const width = Math.max(...xs) - Math.min(...xs);
+      const height = Math.max(...ys) - Math.min(...ys);
+      if (height > 0 && height <= UNDERLINE_RECT_MAX_HEIGHT && width > height) {
+        const midY = (Math.min(...ys) + Math.max(...ys)) / 2;
+        rects.push({ x0: Math.min(...xs), x1: Math.max(...xs), y0: midY, y1: midY });
+      }
+    }
+  }
+  return rects;
 }
 
 const SEGMENT_MIN_LENGTH = 20; // pt — ignores tick marks / short decorative rules
@@ -383,6 +454,7 @@ function runToTextRun(run: Run, rtl: boolean): TextRun {
     size: Math.max(2, Math.round(run.fontSize * 2)),
     font: mapFontFamily(run.fontFamily, isHebrew),
     rightToLeft: rtl,
+    underline: run.underline ? {} : undefined,
   });
 }
 
@@ -423,10 +495,13 @@ async function extractPageSpans(
       height,
       bold: fontInfo.bold,
       italic: fontInfo.italic,
+      underline: false,
       color,
       fontFamily: fontInfo.name,
     });
   }
+  const underlineCandidates = [...extractLineSegments(opList, viewport), ...extractUnderlineRects(opList, viewport)];
+  applyUnderlinesToSpans(spans, underlineCandidates);
   return { spans, page, viewport, opList };
 }
 
@@ -434,6 +509,7 @@ function sameRunStyle(a: Span, b: Span): boolean {
   return (
     a.bold === b.bold &&
     a.italic === b.italic &&
+    a.underline === b.underline &&
     a.color === b.color &&
     Math.abs(a.height - b.height) < 0.5 &&
     a.fontFamily === b.fontFamily
@@ -499,6 +575,7 @@ function buildLine(row: Span[]): Line | null {
         text: prefix + item.text,
         bold: item.bold,
         italic: item.italic,
+        underline: item.underline,
         color: item.color,
         fontSize: item.height,
         fontFamily: item.fontFamily,
@@ -515,6 +592,37 @@ function buildLine(row: Span[]): Line | null {
     fontSize,
     rtl,
   };
+}
+
+const UNDERLINE_OVERLAP_RATIO = 0.6;
+
+/**
+ * pdf.js's font flags don't include underline — like PyMuPDF, which recovers
+ * it by looking for a stroke beneath the text rather than a font property —
+ * this looks for a thin, mostly-horizontal segment (stroked line or thin
+ * filled bar; see extractLineSegments / extractUnderlineRects) sitting just
+ * below a span's baseline and spanning most of its width. Run per span,
+ * before spans are merged into style runs, so an underlined portion of a
+ * line (e.g. just the linked text of a "Subject: ..." line, not the label)
+ * doesn't get merged together with a non-underlined neighbor that happens
+ * to share the same font/bold/color.
+ */
+function applyUnderlinesToSpans(spans: Span[], segments: LineSegment[]): void {
+  const horizontals = segments.filter((s) => Math.abs(s.y0 - s.y1) < 1);
+  if (horizontals.length === 0) return;
+  for (const span of spans) {
+    if (span.text.trim() === '') continue;
+    const candidates = horizontals.filter((s) => s.y0 <= span.y + 1 && s.y0 >= span.y - span.height * 0.35);
+    for (const seg of candidates) {
+      const segX0 = Math.min(seg.x0, seg.x1);
+      const segX1 = Math.max(seg.x0, seg.x1);
+      const overlap = Math.min(span.x + span.width, segX1) - Math.max(span.x, segX0);
+      if (overlap / span.width >= UNDERLINE_OVERLAP_RATIO) {
+        span.underline = true;
+        break;
+      }
+    }
+  }
 }
 
 async function extractPageLines(doc: pdfjsLib.PDFDocumentProxy, pageIndex: number): Promise<PageContent> {
@@ -611,11 +719,15 @@ function classifyAlignment(line: Line, margins: Margins, pageWidth: number): Ali
   if (left && right) return 'justify';
   if (right) return 'right';
   if (left) return 'left';
-  // Short, indented line touching neither margin (e.g. a date or a list
-  // item) — fall back to whichever margin it sits geometrically closer to.
-  const distToLeft = line.x0 - margins.left;
-  const distToRight = margins.right - line.x1;
-  return distToRight < distToLeft ? 'right' : 'left';
+  // Short block touching neither margin (a date stamp, a signature block,
+  // an indented list item) — these are frequently placed in their own local
+  // text frame that doesn't share the body paragraphs' margins at all, so
+  // "which global margin is numerically closer" is not a meaningful signal
+  // (a right-anchored signature block can easily sit left-of-center on the
+  // page). What *is* meaningful is the paragraph's own reading direction:
+  // RTL content rests naturally against the right, LTR content against the
+  // left, unless something already flagged it otherwise above.
+  return line.rtl ? 'right' : 'left';
 }
 
 const ALIGNMENT_MAP: Record<Alignment, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
@@ -733,13 +845,25 @@ function joinRunsWithSpace(runs: Run[]): Run[] {
   return out;
 }
 
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+const BIG_GAP_MULTIPLIER = 1.6;
+
 /**
- * Merge consecutive lines into one flowing paragraph only when the earlier
- * line is a genuine full-width wrapped line (touches BOTH margins) with
- * matching alignment/size and a natural single-line-spacing gap to the next
- * line — this deliberately excludes short, geometrically unrelated lines
- * (e.g. a letterhead title sitting close above a subtitle) from being
- * merged just because the vertical gap between them happens to be small.
+ * Merge consecutive lines into one flowing paragraph unless something marks
+ * a genuine new block: a centered line (a title/subject sits alone, and
+ * body text never continues directly into or out of one), a new list
+ * marker, or a vertical gap significantly larger than this page's normal
+ * line spacing. Two lines sharing ordinary single-line-spacing are treated
+ * as the same paragraph even when their *individual* geometric alignment
+ * differs — e.g. a wrapped paragraph's justified body lines followed by its
+ * shorter final line, which naturally doesn't reach the far margin and so
+ * classifies as plain left/right on its own.
  */
 function groupIntoParagraphs(lines: Line[], margins: Margins, pageWidth: number): ParagraphData[] {
   if (lines.length === 0) return [];
@@ -749,11 +873,11 @@ function groupIntoParagraphs(lines: Line[], margins: Margins, pageWidth: number)
     const gap = lines[i - 1].y - lines[i].y;
     if (gap > 0) gaps.push(gap);
   }
-  const typicalGap = gaps.length > 0 ? Math.min(...gaps) : 0;
+  const typicalGap = median(gaps);
 
   interface Group {
     memberLines: Line[];
-    alignment: Alignment;
+    alignments: Alignment[];
     marker: ListMarker | null;
   }
   const groups: Group[] = [];
@@ -762,25 +886,27 @@ function groupIntoParagraphs(lines: Line[], margins: Margins, pageWidth: number)
     const alignment = classifyAlignment(line, margins, pageWidth);
     const marker = detectListMarker(line, pageWidth);
     const prevGroup = groups[groups.length - 1];
-    const prevLine = prevGroup ? prevGroup.memberLines[prevGroup.memberLines.length - 1] : null;
+    const prevLine = prevGroup ? prevGroup.memberLines[prevGroup.memberLines.length - 1] : undefined;
+    const prevAlignment = prevGroup ? prevGroup.alignments[prevGroup.alignments.length - 1] : undefined;
+
+    const gapFromPrev = prevLine ? prevLine.y - line.y : Infinity;
+    const isBigGap = typicalGap > 0 && gapFromPrev > typicalGap * BIG_GAP_MULTIPLIER;
+    const isFontSizeJump = prevLine ? Math.abs(line.fontSize - prevLine.fontSize) >= prevLine.fontSize * 0.15 : false;
 
     const canMerge =
       prevGroup !== undefined &&
-      prevLine !== null &&
       marker === null &&
       prevGroup.marker === null &&
-      alignment === prevGroup.alignment &&
-      alignment === 'justify' &&
-      touchesLeft(prevLine, margins) &&
-      touchesRight(prevLine, margins) &&
-      Math.abs(line.fontSize - prevLine.fontSize) < prevLine.fontSize * 0.15 &&
-      typicalGap > 0 &&
-      prevLine.y - line.y < typicalGap * 1.6;
+      alignment !== 'center' &&
+      prevAlignment !== 'center' &&
+      !isBigGap &&
+      !isFontSizeJump;
 
     if (canMerge && prevGroup) {
       prevGroup.memberLines.push(line);
+      prevGroup.alignments.push(alignment);
     } else {
-      groups.push({ memberLines: [line], alignment, marker });
+      groups.push({ memberLines: [line], alignments: [alignment], marker });
     }
   }
 
@@ -799,6 +925,12 @@ function groupIntoParagraphs(lines: Line[], margins: Margins, pageWidth: number)
 
     const fullText = group.memberLines.map((l) => l.text).join(' ');
     const avgFontSize = group.memberLines.reduce((s, l) => s + l.fontSize, 0) / group.memberLines.length;
+    // A multi-line block where any line reached both margins reads as a
+    // justified paragraph overall, even though its last (short) line can't
+    // itself touch the far margin. A single-line block just keeps its own
+    // classification (right/left/center).
+    const alignment: Alignment =
+      group.memberLines.length > 1 && group.alignments.includes('justify') ? 'justify' : group.alignments[0];
 
     let lineSpacingTwips: number | null = null;
     if (group.memberLines.length > 1) {
@@ -819,7 +951,7 @@ function groupIntoParagraphs(lines: Line[], margins: Margins, pageWidth: number)
 
     return {
       runs,
-      alignment: group.alignment,
+      alignment,
       rtl: isParagraphRtl(fullText),
       fontSize: avgFontSize,
       marker: group.marker,
