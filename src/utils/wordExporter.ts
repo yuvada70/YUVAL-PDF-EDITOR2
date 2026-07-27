@@ -1,161 +1,1222 @@
-import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from 'docx';
+import {
+  Document, Packer, Paragraph, TextRun, AlignmentType, ImageRun,
+  Header, Footer, LevelFormat, LevelSuffix, LineRuleType,
+  Table, TableRow, TableCell, WidthType,
+} from 'docx';
 import * as pdfjsLib from 'pdfjs-dist';
 import { loadPdfDocument } from './pdfRenderer';
 import { RTL_RE } from './hebrewFont';
+import { mapFontFamily } from './wordFonts';
+
+/** Pre-extracted branding to use instead of (or when) auto-detection from the
+ * PDF doesn't find anything — e.g. a letterhead built from vector graphics
+ * that also happens to sit too close to the body text to crop safely. */
+export interface WordExportAssets {
+  headerImage?: { dataUrl: string; width: number; height: number };
+  footerImage?: { dataUrl: string; width: number; height: number };
+}
+
+// ===========================================================================
+// Shared geometry types
+// ===========================================================================
+
+type Matrix = [number, number, number, number, number, number];
+
+function multiplyMatrix(m1: Matrix, m2: Matrix): Matrix {
+  return [
+    m1[0] * m2[0] + m1[1] * m2[2],
+    m1[0] * m2[1] + m1[1] * m2[3],
+    m1[2] * m2[0] + m1[3] * m2[2],
+    m1[2] * m2[1] + m1[3] * m2[3],
+    m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
+    m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
+  ];
+}
+
+function applyMatrix(m: Matrix, x: number, y: number): [number, number] {
+  return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+}
+
+/** pdf.js exposes getOperatorList()'s return shape as PDFOperatorList, but
+ * doesn't re-export that type from its top-level module — this mirrors it
+ * locally. */
+interface OperatorList {
+  fnArray: number[];
+  argsArray: unknown[];
+}
+
+// ===========================================================================
+// Feature 3/4/5: per-span style (bold/italic/font-size/color) extraction
+// ===========================================================================
+
+interface FontInfo {
+  bold: boolean;
+  italic: boolean;
+  name: string;
+}
+
+/** Reads real bold/italic/name from the font object pdf.js resolved while
+ * building the operator list — far more reliable than getTextContent()'s own
+ * `styles` map, which collapses every embedded/subsetted font down to a
+ * generic CSS fallback like "sans-serif". Must only be called after
+ * page.getOperatorList() has resolved, since that's what populates
+ * page.commonObjs. */
+function getFontInfo(page: pdfjsLib.PDFPageProxy, fontName: string, cache: Map<string, FontInfo>): FontInfo {
+  const cached = cache.get(fontName);
+  if (cached) return cached;
+  let info: FontInfo = { bold: false, italic: false, name: fontName };
+  try {
+    if (page.commonObjs.has(fontName)) {
+      const obj = page.commonObjs.get(fontName) as { bold?: boolean; italic?: boolean; name?: string; fallbackName?: string };
+      info = { bold: !!obj.bold, italic: !!obj.italic, name: obj.name || obj.fallbackName || fontName };
+    }
+  } catch {
+    // Font object not resolved yet — fall back to the default (regular) style.
+  }
+  cache.set(fontName, info);
+  return info;
+}
+
+function clamp255(v: number): number {
+  return Math.max(0, Math.min(255, Math.round(v)));
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const toHex = (v: number) => clamp255(v).toString(16).padStart(2, '0');
+  return `${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function cmykToHex(c: number, m: number, y: number, k: number): string {
+  const r = 255 * (1 - c) * (1 - k);
+  const g = 255 * (1 - m) * (1 - k);
+  const b = 255 * (1 - y) * (1 - k);
+  return rgbToHex(r, g, b);
+}
+
+const BLACK = '000000';
+
+/**
+ * Color isn't exposed by getTextContent(), so it's recovered by walking the
+ * page's content-stream operator list, tracking the active fill color and
+ * font, and recording the color in effect at each showText call — keyed by
+ * font token, in call order. extractPageSpans() later "replays" this queue
+ * while walking getTextContent()'s items, popping one color per non-blank
+ * text item for that item's font.
+ */
+function buildColorQueues(opList: OperatorList): Map<string, string[]> {
+  const OPS = pdfjsLib.OPS;
+  const queues = new Map<string, string[]>();
+  let currentColor = BLACK;
+  let currentFontToken: string | null = null;
+
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    const fn = opList.fnArray[i];
+    const args = opList.argsArray[i];
+    if (fn === OPS.setFillRGBColor) {
+      const a = args as unknown as Record<number, number>;
+      currentColor = rgbToHex(a[0], a[1], a[2]);
+    } else if (fn === OPS.setFillGray) {
+      const gray = (args as number[])[0] * 255;
+      currentColor = rgbToHex(gray, gray, gray);
+    } else if (fn === OPS.setFillCMYKColor) {
+      const a = args as number[];
+      currentColor = cmykToHex(a[0], a[1], a[2], a[3]);
+    } else if (fn === OPS.setFont) {
+      currentFontToken = (args as [string, number])[0];
+    } else if (fn === OPS.showText) {
+      if (currentFontToken) {
+        const q = queues.get(currentFontToken);
+        if (q) q.push(currentColor);
+        else queues.set(currentFontToken, [currentColor]);
+      }
+    }
+  }
+  return queues;
+}
+
+// ===========================================================================
+// Text extraction: spans -> lines (Features 1-5)
+// ===========================================================================
+
+interface Run {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  fontSize: number;
+  fontFamily: string;
+}
 
 interface Line {
+  runs: Run[];
   text: string;
+  x0: number;
+  x1: number;
+  y: number;
   fontSize: number;
   rtl: boolean;
 }
 
-/**
- * Reconstruct a page's text as lines, grouping text items by their Y
- * position rather than relying on pdf.js's hasEOL flag, which is a rough
- * heuristic that many PDF producers trip up (e.g. justified text, tables,
- * or unusual line spacing can make it miss or over-report line breaks).
- *
- * Within a line, items are ordered left-to-right for LTR text but
- * right-to-left for RTL (Hebrew) text: a PDF's content stream places each
- * run at its own visual X position, and for an RTL line the run that reads
- * first sits at the *highest* X (closest to the right margin). Sorting
- * purely by ascending X — as if every line were LTR — scrambles word order
- * for any Hebrew line built from more than one run (dates, mixed
- * Hebrew/number text, multi-styled text, etc).
- */
-async function extractPageLines(doc: pdfjsLib.PDFDocumentProxy, pageIndex: number): Promise<Line[]> {
-  const page = await doc.getPage(pageIndex + 1);
-  const textContent = await page.getTextContent();
+interface Span {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  bold: boolean;
+  italic: boolean;
+  color: string;
+  fontFamily: string;
+}
 
-  type Item = { text: string; x: number; y: number; width: number; height: number };
-  const items: Item[] = [];
-  for (const raw of textContent.items) {
-    if (!('str' in raw) || raw.str === '') continue;
-    const height = Math.hypot(raw.transform[2], raw.transform[3]) || Math.abs(raw.transform[3]) || 10;
-    items.push({ text: raw.str, x: raw.transform[4], y: raw.transform[5], width: raw.width, height });
-  }
-  if (items.length === 0) return [];
+interface PageContent {
+  lines: Line[];
+  gridBoundaries: GridBoundaries | null;
+  pageWidth: number;
+  pageHeight: number;
+}
 
-  // Group into rows by Y position first (order within a row is fixed up below).
-  items.sort((a, b) => b.y - a.y || a.x - b.x);
-  const Y_TOLERANCE = 2;
-  const rows: Item[][] = [];
-  for (const item of items) {
-    const last = rows[rows.length - 1];
-    if (last && Math.abs(last[0].y - item.y) <= Y_TOLERANCE) {
-      last.push(item);
-    } else {
-      rows.push([item]);
-    }
-  }
+// ===========================================================================
+// Feature 9: ruled-table detection (line segments -> grid -> cells)
+// ===========================================================================
 
-  return rows.map((row) => buildLine(row)).filter((line): line is Line => line !== null);
+interface LineSegment {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
 
 /**
- * Reconstruct one line's text from its items, handling two things a plain
- * left-to-right join gets wrong for RTL content:
+ * Extract straight, *stroked* line segments from the page's content-stream
+ * operator list — the geometric signature of a ruled table's borders. Only
+ * segments that are actually painted with a stroke are kept: a
+ * constructPath call not followed by a stroke op is typically a clip region
+ * (e.g. the rectangle pdf.js draws around every embedded image) rather than
+ * a visible border, and counting those would produce false-positive grids
+ * on almost any PDF with images.
+ */
+function extractLineSegments(opList: OperatorList, viewport: pdfjsLib.PageViewport): LineSegment[] {
+  void viewport;
+  const OPS = pdfjsLib.OPS;
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  const segments: LineSegment[] = [];
+  const STROKE_OPS = new Set([OPS.stroke, OPS.closeStroke, OPS.fillStroke, OPS.eoFillStroke]);
+
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    const fn = opList.fnArray[i];
+    if (fn === OPS.save) {
+      stack.push(ctm);
+    } else if (fn === OPS.restore) {
+      ctm = stack.pop() ?? ctm;
+    } else if (fn === OPS.transform) {
+      ctm = multiplyMatrix(opList.argsArray[i] as Matrix, ctm);
+    } else if (fn === OPS.constructPath) {
+      const [opCodes, coords] = opList.argsArray[i] as [number[], number[], number[]];
+      const isStroked = STROKE_OPS.has(opList.fnArray[i + 1]);
+      if (!isStroked) continue;
+      let cx = 0;
+      let cy = 0;
+      let ci = 0;
+      for (const code of opCodes) {
+        if (code === OPS.moveTo) {
+          cx = coords[ci++];
+          cy = coords[ci++];
+        } else if (code === OPS.lineTo) {
+          const nx = coords[ci++];
+          const ny = coords[ci++];
+          const [x0, y0] = applyMatrix(ctm, cx, cy);
+          const [x1, y1] = applyMatrix(ctm, nx, ny);
+          segments.push({ x0, y0, x1, y1 });
+          cx = nx;
+          cy = ny;
+        } else if (code === OPS.rectangle) {
+          const rx = coords[ci++];
+          const ry = coords[ci++];
+          const rw = coords[ci++];
+          const rh = coords[ci++];
+          const corners: [number, number][] = [[rx, ry], [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh], [rx, ry]];
+          for (let k = 0; k < 4; k++) {
+            const [x0, y0] = applyMatrix(ctm, corners[k][0], corners[k][1]);
+            const [x1, y1] = applyMatrix(ctm, corners[k + 1][0], corners[k + 1][1]);
+            segments.push({ x0, y0, x1, y1 });
+          }
+          cx = rx;
+          cy = ry;
+        } else if (code === OPS.curveTo) {
+          ci += 6; // skip control + end points — curves aren't table borders
+        }
+      }
+    }
+  }
+  return segments;
+}
+
+const SEGMENT_MIN_LENGTH = 20; // pt — ignores tick marks / short decorative rules
+const GRID_CLUSTER_TOLERANCE = 3; // pt
+
+function clusterValues(values: number[], tolerance: number): number[] {
+  const sorted = [...values].sort((a, b) => a - b);
+  const clusters: number[][] = [];
+  for (const v of sorted) {
+    const last = clusters[clusters.length - 1];
+    if (last && v - last[last.length - 1] <= tolerance) last.push(v);
+    else clusters.push([v]);
+  }
+  return clusters.map((c) => c.reduce((a, b) => a + b, 0) / c.length);
+}
+
+interface GridBoundaries {
+  rowBoundaries: number[]; // y, descending (top row first)
+  colBoundaries: number[]; // x, ascending
+}
+
+/** Computes just the row/column ruling positions from stroked segments,
+ * independently of any text — this has to run *before* text is grouped
+ * into lines, so that a table row's cells (which sit at the same Y as each
+ * other) can be kept as separate lines instead of being merged into one
+ * blob of "A1 B1 C1" text by the ordinary same-row clustering. */
+function computeGridBoundaries(segments: LineSegment[]): GridBoundaries | null {
+  const horizontals = segments.filter((s) => Math.abs(s.y0 - s.y1) < 1 && Math.abs(s.x0 - s.x1) > SEGMENT_MIN_LENGTH);
+  const verticals = segments.filter((s) => Math.abs(s.x0 - s.x1) < 1 && Math.abs(s.y0 - s.y1) > SEGMENT_MIN_LENGTH);
+  if (horizontals.length < 2 || verticals.length < 2) return null;
+
+  const rowBoundaries = clusterValues(horizontals.map((s) => s.y0), GRID_CLUSTER_TOLERANCE).sort((a, b) => b - a);
+  const colBoundaries = clusterValues(verticals.map((s) => s.x0), GRID_CLUSTER_TOLERANCE).sort((a, b) => a - b);
+  if (rowBoundaries.length < 2 || colBoundaries.length < 2) return null;
+  return { rowBoundaries, colBoundaries };
+}
+
+/** Which column band (index into colBoundaries) an x position falls into,
+ * or -1 if it's outside every band. */
+function columnBandOf(x: number, colBoundaries: number[]): number {
+  for (let c = 0; c < colBoundaries.length - 1; c++) {
+    if (x >= colBoundaries[c] - GRID_CLUSTER_TOLERANCE && x <= colBoundaries[c + 1] + GRID_CLUSTER_TOLERANCE) return c;
+  }
+  return -1;
+}
+
+interface TableGrid {
+  rowBoundaries: number[]; // y, descending (top row first)
+  colBoundaries: number[]; // x, ascending
+  cells: Line[][][]; // [row][col]
+  consumed: Set<Line>;
+}
+
+function detectTableGrid(grid: GridBoundaries, lines: Line[]): TableGrid | null {
+  const { rowBoundaries, colBoundaries } = grid;
+  const numRows = rowBoundaries.length - 1;
+  const numCols = colBoundaries.length - 1;
+  const minY = rowBoundaries[rowBoundaries.length - 1];
+  const maxY = rowBoundaries[0];
+  const minX = colBoundaries[0];
+  const maxX = colBoundaries[colBoundaries.length - 1];
+
+  const cells: Line[][][] = Array.from({ length: numRows }, () => Array.from({ length: numCols }, () => [] as Line[]));
+  const consumed = new Set<Line>();
+
+  for (const line of lines) {
+    const midX = (line.x0 + line.x1) / 2;
+    const midY = line.y;
+    if (midX < minX - GRID_CLUSTER_TOLERANCE || midX > maxX + GRID_CLUSTER_TOLERANCE) continue;
+    if (midY < minY - GRID_CLUSTER_TOLERANCE || midY > maxY + GRID_CLUSTER_TOLERANCE) continue;
+    let row = -1;
+    for (let r = 0; r < numRows; r++) {
+      if (midY <= rowBoundaries[r] + GRID_CLUSTER_TOLERANCE && midY >= rowBoundaries[r + 1] - GRID_CLUSTER_TOLERANCE) { row = r; break; }
+    }
+    let col = -1;
+    for (let c = 0; c < numCols; c++) {
+      if (midX >= colBoundaries[c] - GRID_CLUSTER_TOLERANCE && midX <= colBoundaries[c + 1] + GRID_CLUSTER_TOLERANCE) { col = c; break; }
+    }
+    if (row === -1 || col === -1) continue;
+    cells[row][col].push(line);
+    consumed.add(line);
+  }
+  if (consumed.size === 0) return null;
+  return { rowBoundaries, colBoundaries, cells, consumed };
+}
+
+function buildDocxTable(grid: TableGrid, docRtl: boolean): Table {
+  const numCols = grid.colBoundaries.length - 1;
+  const colWidthsTwips = Array.from({ length: numCols }, (_, c) =>
+    Math.max(200, Math.round((grid.colBoundaries[c + 1] - grid.colBoundaries[c]) * PT_TO_TWIPS))
+  );
+
+  const rows = grid.cells.map((rowCells) => {
+    const tableCells = rowCells.map((cellLines, colIdx) => {
+      const cellParagraphs =
+        cellLines.length > 0
+          ? cellLines
+              .sort((a, b) => b.y - a.y)
+              .map(
+                (line) =>
+                  new Paragraph({
+                    bidirectional: line.rtl,
+                    alignment: line.rtl ? AlignmentType.RIGHT : AlignmentType.LEFT,
+                    children: line.runs.length > 0 ? line.runs.map((r) => runToTextRun(r, line.rtl)) : [new TextRun({ text: '' })],
+                  })
+              )
+          : [new Paragraph({ text: '' })];
+      return new TableCell({
+        width: { size: colWidthsTwips[colIdx], type: WidthType.DXA },
+        children: cellParagraphs,
+      });
+    });
+    return new TableRow({ children: tableCells });
+  });
+
+  return new Table({
+    rows,
+    columnWidths: colWidthsTwips,
+    visuallyRightToLeft: docRtl,
+  });
+}
+
+function runToTextRun(run: Run, rtl: boolean): TextRun {
+  const isHebrew = RTL_RE.test(run.text);
+  return new TextRun({
+    text: run.text,
+    bold: run.bold,
+    italics: run.italic,
+    color: run.color,
+    size: Math.max(2, Math.round(run.fontSize * 2)),
+    font: mapFontFamily(run.fontFamily, isHebrew),
+    rightToLeft: rtl,
+  });
+}
+
+async function extractPageSpans(
+  doc: pdfjsLib.PDFDocumentProxy,
+  pageIndex: number
+): Promise<{ spans: Span[]; page: pdfjsLib.PDFPageProxy; viewport: pdfjsLib.PageViewport; opList: OperatorList }> {
+  const page = await doc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: 1 });
+  // getOperatorList() must run before commonObjs/font lookups or color-queue
+  // extraction can work — it's what actually resolves fonts and images.
+  const opList = await page.getOperatorList();
+  const textContent = await page.getTextContent();
+  const colorQueues = buildColorQueues(opList);
+  const colorPointers = new Map<string, number>();
+  const fontInfoCache = new Map<string, FontInfo>();
+
+  const spans: Span[] = [];
+  for (const raw of textContent.items) {
+    if (!('str' in raw) || raw.str === '') continue;
+    const height = Math.hypot(raw.transform[2], raw.transform[3]) || Math.abs(raw.transform[3]) || 10;
+    const fontToken = raw.fontName;
+    const fontInfo = getFontInfo(page, fontToken, fontInfoCache);
+    let color = BLACK;
+    if (raw.str.trim() !== '') {
+      const queue = colorQueues.get(fontToken);
+      if (queue) {
+        const ptr = colorPointers.get(fontToken) ?? 0;
+        color = queue[Math.min(ptr, queue.length - 1)] ?? BLACK;
+        colorPointers.set(fontToken, ptr + 1);
+      }
+    }
+    spans.push({
+      text: raw.str,
+      x: raw.transform[4],
+      y: raw.transform[5],
+      width: raw.width,
+      height,
+      bold: fontInfo.bold,
+      italic: fontInfo.italic,
+      color,
+      fontFamily: fontInfo.name,
+    });
+  }
+  return { spans, page, viewport, opList };
+}
+
+function sameRunStyle(a: Span, b: Span): boolean {
+  return (
+    a.bold === b.bold &&
+    a.italic === b.italic &&
+    a.color === b.color &&
+    Math.abs(a.height - b.height) < 0.5 &&
+    a.fontFamily === b.fontFamily
+  );
+}
+
+/**
+ * Reconstruct one line's text and style-runs from its spans, handling two
+ * things a plain left-to-right join gets wrong for RTL content:
  *
  *  - Bidi run order: within an RTL line, a PDF places the run that reads
  *    first at the *highest* X. But an embedded LTR run (a date, a contract
  *    number) must keep its own internal left-to-right order — only the
  *    runs themselves get reversed, not the characters inside an LTR run.
  *  - Word spacing: PDFs don't reliably emit a literal space character
- *    between runs; a real gap between two items' bounding boxes is treated
- *    as a space instead, regardless of whether pdf.js happened to insert
- *    an explicit " " item there.
+ *    between items; a real gap between two items' bounding boxes is treated
+ *    as a space instead.
+ *
+ * Consecutive spans that share bold/italic/color/size/font are merged into a
+ * single Word run so styling doesn't get needlessly fragmented per glyph run.
  */
-function buildLine(row: { text: string; x: number; width: number; height: number }[]): Line | null {
-  const content = row
-    .filter((it) => it.text.trim() !== '')
-    .sort((a, b) => a.x - b.x);
+function buildLine(row: Span[]): Line | null {
+  const content = row.filter((it) => it.text.trim() !== '').sort((a, b) => a.x - b.x);
   if (content.length === 0) return null;
 
   const rtl = RTL_RE.test(content.map((it) => it.text).join(''));
   const fontSize = content.reduce((sum, it) => sum + it.height, 0) / content.length;
+  const x0 = Math.min(...content.map((it) => it.x));
+  const x1 = Math.max(...content.map((it) => it.x + it.width));
 
-  // Group physically-adjacent items of the same direction into runs.
-  type Run = { dir: 'R' | 'L'; items: typeof content };
-  const runs: Run[] = [];
+  type BidiRun = { dir: 'R' | 'L'; items: Span[] };
+  const bidiRuns: BidiRun[] = [];
   for (const item of content) {
     const dir: 'R' | 'L' = RTL_RE.test(item.text) ? 'R' : 'L';
-    const last = runs[runs.length - 1];
+    const last = bidiRuns[bidiRuns.length - 1];
     if (last && last.dir === dir) last.items.push(item);
-    else runs.push({ dir, items: [item] });
+    else bidiRuns.push({ dir, items: [item] });
   }
-
-  const orderedRuns = rtl ? [...runs].reverse() : runs;
-  const ordered = orderedRuns.flatMap((run) => (run.dir === 'R' ? [...run.items].reverse() : run.items));
+  const orderedBidiRuns = rtl ? [...bidiRuns].reverse() : bidiRuns;
+  const ordered = orderedBidiRuns.flatMap((run) => (run.dir === 'R' ? [...run.items].reverse() : run.items));
 
   const SPACE_GAP_RATIO = 0.2;
+  const runs: Run[] = [];
   let text = '';
   for (let i = 0; i < ordered.length; i++) {
+    const item = ordered[i];
+    let prefix = '';
     if (i > 0) {
       const a = ordered[i - 1];
-      const b = ordered[i];
+      const b = item;
       const left = a.x < b.x ? a : b;
       const right = a.x < b.x ? b : a;
       const gap = right.x - (left.x + left.width);
-      if (gap > Math.max(left.height, right.height) * SPACE_GAP_RATIO) text += ' ';
+      if (gap > Math.max(left.height, right.height) * SPACE_GAP_RATIO) prefix = ' ';
     }
-    text += ordered[i].text;
+    text += prefix + item.text;
+
+    const last = runs[runs.length - 1];
+    if (last && !prefix.includes('\n') && i > 0 && sameRunStyle(ordered[i - 1], item)) {
+      last.text += prefix + item.text;
+    } else {
+      runs.push({
+        text: prefix + item.text,
+        bold: item.bold,
+        italic: item.italic,
+        color: item.color,
+        fontSize: item.height,
+        fontFamily: item.fontFamily,
+      });
+    }
   }
 
-  return { text: text.replace(/\s+/g, ' ').trim(), fontSize, rtl };
+  return {
+    runs,
+    text: text.replace(/\s+/g, ' ').trim(),
+    x0,
+    x1,
+    y: content[0].y,
+    fontSize,
+    rtl,
+  };
+}
+
+async function extractPageLines(doc: pdfjsLib.PDFDocumentProxy, pageIndex: number): Promise<PageContent> {
+  const { spans, page, viewport, opList } = await extractPageSpans(doc, pageIndex);
+  const segments = extractLineSegments(opList, viewport);
+  const gridBoundaries = computeGridBoundaries(segments);
+
+  if (spans.length === 0) {
+    return { lines: [], gridBoundaries, pageWidth: viewport.width, pageHeight: viewport.height };
+  }
+  spans.sort((a, b) => b.y - a.y || a.x - b.x);
+  const Y_TOLERANCE = 2;
+  const rows: Span[][] = [];
+  for (const item of spans) {
+    const last = rows[rows.length - 1];
+    if (last && Math.abs(last[0].y - item.y) <= Y_TOLERANCE) last.push(item);
+    else rows.push([item]);
+  }
+
+  // A table row's cells sit at the same Y as each other, so the ordinary
+  // same-row clustering above would otherwise merge "A1", "B1", "C1" into
+  // one line of text ("A1 B1 C1") before table detection ever gets a
+  // chance to separate them by column. Whenever a row falls inside a
+  // detected grid, split it by column band first so each cell stays its
+  // own line.
+  const subRows: Span[][] = [];
+  for (const row of rows) {
+    const gb = gridBoundaries;
+    const inGridRange =
+      gb && row.length > 0 && row[0].y <= gb.rowBoundaries[0] + GRID_CLUSTER_TOLERANCE && row[0].y >= gb.rowBoundaries[gb.rowBoundaries.length - 1] - GRID_CLUSTER_TOLERANCE;
+    if (!inGridRange || !gb) {
+      subRows.push(row);
+      continue;
+    }
+    const byBand = new Map<number, Span[]>();
+    for (const item of row) {
+      const band = columnBandOf(item.x + item.width / 2, gb.colBoundaries);
+      const key = band === -1 ? -1 : band;
+      const bucket = byBand.get(key);
+      if (bucket) bucket.push(item);
+      else byBand.set(key, [item]);
+    }
+    for (const bucket of byBand.values()) subRows.push(bucket);
+  }
+
+  const lines = subRows.map((row) => buildLine(row)).filter((line): line is Line => line !== null);
+  void page;
+  return { lines, gridBoundaries, pageWidth: viewport.width, pageHeight: viewport.height };
+}
+
+// ===========================================================================
+// Feature 1: alignment classification from geometry
+// ===========================================================================
+
+type Alignment = 'left' | 'right' | 'center' | 'justify';
+
+interface Margins {
+  left: number;
+  right: number;
+}
+
+const MARGIN_TOLERANCE = 6;
+
+function computeMargins(lines: Line[]): Margins {
+  if (lines.length === 0) return { left: 0, right: 0 };
+  return {
+    left: Math.min(...lines.map((l) => l.x0)),
+    right: Math.max(...lines.map((l) => l.x1)),
+  };
+}
+
+function touchesLeft(line: Line, margins: Margins): boolean {
+  return line.x0 - margins.left <= MARGIN_TOLERANCE;
+}
+
+function touchesRight(line: Line, margins: Margins): boolean {
+  return margins.right - line.x1 <= MARGIN_TOLERANCE;
+}
+
+/** A line whose bounding box is centered on the page and clearly narrower
+ * than a full paragraph line is the geometric signature of a title or
+ * subject line, as opposed to a justified body line that happens to also
+ * average out to the page's midpoint. */
+function isGeometricallyCentered(line: Line, pageWidth: number): boolean {
+  const mid = (line.x0 + line.x1) / 2;
+  const width = line.x1 - line.x0;
+  return Math.abs(mid - pageWidth / 2) < pageWidth * 0.04 && width < pageWidth * 0.7;
+}
+
+function classifyAlignment(line: Line, margins: Margins, pageWidth: number): Alignment {
+  if (isGeometricallyCentered(line, pageWidth)) return 'center';
+  const left = touchesLeft(line, margins);
+  const right = touchesRight(line, margins);
+  if (left && right) return 'justify';
+  if (right) return 'right';
+  if (left) return 'left';
+  // Short, indented line touching neither margin (e.g. a date or a list
+  // item) — fall back to whichever margin it sits geometrically closer to.
+  const distToLeft = line.x0 - margins.left;
+  const distToRight = margins.right - line.x1;
+  return distToRight < distToLeft ? 'right' : 'left';
+}
+
+const ALIGNMENT_MAP: Record<Alignment, (typeof AlignmentType)[keyof typeof AlignmentType]> = {
+  left: AlignmentType.LEFT,
+  right: AlignmentType.RIGHT,
+  center: AlignmentType.CENTER,
+  justify: AlignmentType.JUSTIFIED,
+};
+
+// ===========================================================================
+// Feature 2: per-paragraph RTL/LTR from majority character content
+// ===========================================================================
+
+const LATIN_RE = /[A-Za-z]/g;
+
+function isParagraphRtl(text: string): boolean {
+  const hebrewCount = (text.match(RTL_RE) || []).length;
+  const latinCount = (text.match(LATIN_RE) || []).length;
+  if (hebrewCount === 0 && latinCount === 0) return false;
+  return hebrewCount >= latinCount;
+}
+
+// ===========================================================================
+// Feature 8: list marker detection (numbers and bullets)
+// ===========================================================================
+
+// Matches a leading list marker in either order a source PDF may store it in
+// — "1. " (typed normally) or ".1 " (the period placed before the digit,
+// which happens when an RTL document's own author typed the marker as
+// literal characters rather than using real list numbering).
+const NUMBER_MARKER_RE = /^\.?(\d+)\.?\s+/;
+const BULLET_MARKER_RE = /^[•\-–●○■◦‣∙·]\s+/;
+
+interface ListMarker {
+  kind: 'decimal' | 'bullet';
+  strippedText: string;
+}
+
+function detectListMarker(line: Line, pageWidth: number): ListMarker | null {
+  // A centered, short line is a title/heading, never a list item, even if
+  // it happens to start with a digit (e.g. a year).
+  if (isGeometricallyCentered(line, pageWidth)) return null;
+  // A leading bare digit is only trusted as a list marker on a full
+  // paragraph-width line — a short, indented line (a date like
+  // "7 ביולי 2026") can also start with a digit and must not be mistaken
+  // for one.
+  const isWideLine = line.x1 - line.x0 > pageWidth * 0.5;
+  if (isWideLine) {
+    const m = line.text.match(NUMBER_MARKER_RE);
+    if (m) return { kind: 'decimal', strippedText: line.text.slice(m[0].length) };
+  }
+  const b = line.text.match(BULLET_MARKER_RE);
+  if (b) return { kind: 'bullet', strippedText: line.text.slice(b[0].length) };
+  return null;
+}
+
+function stripLeadingMarkerFromRuns(runs: Run[], markerLength: number): Run[] {
+  if (markerLength <= 0) return runs;
+  const out: Run[] = [];
+  let remaining = markerLength;
+  for (const run of runs) {
+    if (remaining <= 0) {
+      out.push(run);
+      continue;
+    }
+    if (run.text.length <= remaining) {
+      remaining -= run.text.length;
+      continue;
+    }
+    out.push({ ...run, text: run.text.slice(remaining) });
+    remaining = 0;
+  }
+  return out;
+}
+
+const NUM_REF_DECIMAL_RTL = 'pdf-num-decimal-rtl';
+const NUM_REF_DECIMAL_LTR = 'pdf-num-decimal-ltr';
+const NUM_REF_BULLET_RTL = 'pdf-num-bullet-rtl';
+const NUM_REF_BULLET_LTR = 'pdf-num-bullet-ltr';
+
+const NUMBERING_CONFIG = {
+  config: [
+    { reference: NUM_REF_DECIMAL_RTL, levels: [{ level: 0, format: LevelFormat.DECIMAL, text: '%1.', suffix: LevelSuffix.SPACE, alignment: AlignmentType.RIGHT }] },
+    { reference: NUM_REF_DECIMAL_LTR, levels: [{ level: 0, format: LevelFormat.DECIMAL, text: '%1.', suffix: LevelSuffix.SPACE, alignment: AlignmentType.LEFT }] },
+    { reference: NUM_REF_BULLET_RTL, levels: [{ level: 0, format: LevelFormat.BULLET, text: '•', suffix: LevelSuffix.SPACE, alignment: AlignmentType.RIGHT }] },
+    { reference: NUM_REF_BULLET_LTR, levels: [{ level: 0, format: LevelFormat.BULLET, text: '•', suffix: LevelSuffix.SPACE, alignment: AlignmentType.LEFT }] },
+  ],
+};
+
+function numberingReferenceFor(marker: ListMarker, rtl: boolean): string {
+  if (marker.kind === 'decimal') return rtl ? NUM_REF_DECIMAL_RTL : NUM_REF_DECIMAL_LTR;
+  return rtl ? NUM_REF_BULLET_RTL : NUM_REF_BULLET_LTR;
+}
+
+// ===========================================================================
+// Paragraph grouping (conservative line merging) + Feature 11: spacing
+// ===========================================================================
+
+interface ParagraphData {
+  runs: Run[];
+  alignment: Alignment;
+  rtl: boolean;
+  fontSize: number;
+  marker: ListMarker | null;
+  lineSpacingTwips: number | null;
+  spacingAfterTwips: number;
+}
+
+const PT_TO_TWIPS = 20;
+
+function joinRunsWithSpace(runs: Run[]): Run[] {
+  if (runs.length === 0) return runs;
+  const out = [...runs];
+  out[0] = { ...out[0], text: ' ' + out[0].text };
+  return out;
 }
 
 /**
- * Convert a PDF's text content into a .docx file. Each PDF line becomes its
- * own Word paragraph — this keeps the source document's line structure
- * intact (important for letters, forms, and anything with headers,
- * salutations, or numbered clauses, where merging lines into flowing
- * prose would scramble the layout) at the cost of long wrapped paragraphs
- * looking a little more segmented than in the original. Lines whose font is
- * meaningfully larger than the page's body text are detected as headings
- * and rendered bold. A page break separates each PDF page.
+ * Merge consecutive lines into one flowing paragraph only when the earlier
+ * line is a genuine full-width wrapped line (touches BOTH margins) with
+ * matching alignment/size and a natural single-line-spacing gap to the next
+ * line — this deliberately excludes short, geometrically unrelated lines
+ * (e.g. a letterhead title sitting close above a subtitle) from being
+ * merged just because the vertical gap between them happens to be small.
+ */
+function groupIntoParagraphs(lines: Line[], margins: Margins, pageWidth: number): ParagraphData[] {
+  if (lines.length === 0) return [];
+
+  const gaps: number[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const gap = lines[i - 1].y - lines[i].y;
+    if (gap > 0) gaps.push(gap);
+  }
+  const typicalGap = gaps.length > 0 ? Math.min(...gaps) : 0;
+
+  interface Group {
+    memberLines: Line[];
+    alignment: Alignment;
+    marker: ListMarker | null;
+  }
+  const groups: Group[] = [];
+
+  for (const line of lines) {
+    const alignment = classifyAlignment(line, margins, pageWidth);
+    const marker = detectListMarker(line, pageWidth);
+    const prevGroup = groups[groups.length - 1];
+    const prevLine = prevGroup ? prevGroup.memberLines[prevGroup.memberLines.length - 1] : null;
+
+    const canMerge =
+      prevGroup !== undefined &&
+      prevLine !== null &&
+      marker === null &&
+      prevGroup.marker === null &&
+      alignment === prevGroup.alignment &&
+      alignment === 'justify' &&
+      touchesLeft(prevLine, margins) &&
+      touchesRight(prevLine, margins) &&
+      Math.abs(line.fontSize - prevLine.fontSize) < prevLine.fontSize * 0.15 &&
+      typicalGap > 0 &&
+      prevLine.y - line.y < typicalGap * 1.6;
+
+    if (canMerge && prevGroup) {
+      prevGroup.memberLines.push(line);
+    } else {
+      groups.push({ memberLines: [line], alignment, marker });
+    }
+  }
+
+  return groups.map((group, idx) => {
+    let runs: Run[] = [];
+    group.memberLines.forEach((line, i) => {
+      let lineRuns = line.runs;
+      if (i === 0 && group.marker) {
+        const markerLen = line.text.length - group.marker.strippedText.length;
+        lineRuns = stripLeadingMarkerFromRuns(lineRuns, markerLen);
+      } else if (i > 0) {
+        lineRuns = joinRunsWithSpace(lineRuns);
+      }
+      runs = runs.concat(lineRuns);
+    });
+
+    const fullText = group.memberLines.map((l) => l.text).join(' ');
+    const avgFontSize = group.memberLines.reduce((s, l) => s + l.fontSize, 0) / group.memberLines.length;
+
+    let lineSpacingTwips: number | null = null;
+    if (group.memberLines.length > 1) {
+      const innerGaps: number[] = [];
+      for (let i = 1; i < group.memberLines.length; i++) {
+        innerGaps.push(group.memberLines[i - 1].y - group.memberLines[i].y);
+      }
+      const avgGap = innerGaps.reduce((a, b) => a + b, 0) / innerGaps.length;
+      lineSpacingTwips = Math.round(avgGap * PT_TO_TWIPS);
+    }
+
+    const nextGroup = groups[idx + 1];
+    let spacingAfterTwips = 120;
+    if (nextGroup) {
+      const gapToNext = group.memberLines[group.memberLines.length - 1].y - nextGroup.memberLines[0].y;
+      if (gapToNext > 0) spacingAfterTwips = Math.max(40, Math.min(400, Math.round(gapToNext * PT_TO_TWIPS * 0.5)));
+    }
+
+    return {
+      runs,
+      alignment: group.alignment,
+      rtl: isParagraphRtl(fullText),
+      fontSize: avgFontSize,
+      marker: group.marker,
+      lineSpacingTwips,
+      spacingAfterTwips,
+    };
+  });
+}
+
+// ===========================================================================
+// Feature 6: image extraction and placement (header/footer/inline)
+// ===========================================================================
+
+interface PlacedImage {
+  /** Bounding box in PDF user-space (points, y-up) — used for classification. */
+  pdfX0: number;
+  pdfY0: number;
+  pdfX1: number;
+  pdfY1: number;
+  /** Bounding box in the rendered canvas's device pixels — used for cropping. */
+  devX0: number;
+  devY0: number;
+  devX1: number;
+  devY1: number;
+}
+
+async function findPlacedImages(page: pdfjsLib.PDFPageProxy, viewport: pdfjsLib.PageViewport): Promise<PlacedImage[]> {
+  const opList = await page.getOperatorList();
+  const OPS = pdfjsLib.OPS;
+  const vt = viewport.transform as unknown as Matrix;
+
+  let ctm: Matrix = [1, 0, 0, 1, 0, 0];
+  const stack: Matrix[] = [];
+  const placed: PlacedImage[] = [];
+
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    const fn = opList.fnArray[i];
+    if (fn === OPS.save) {
+      stack.push(ctm);
+    } else if (fn === OPS.restore) {
+      ctm = stack.pop() ?? ctm;
+    } else if (fn === OPS.transform) {
+      ctm = multiplyMatrix(opList.argsArray[i] as Matrix, ctm);
+    } else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject) {
+      const corners = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([ux, uy]) => applyMatrix(ctm, ux, uy));
+      const xs = corners.map((c) => c[0]);
+      const ys = corners.map((c) => c[1]);
+      const devCorners = corners.map(([x, y]) => applyMatrix(vt, x, y));
+      const devXs = devCorners.map((c) => c[0]);
+      const devYs = devCorners.map((c) => c[1]);
+      placed.push({
+        pdfX0: Math.min(...xs), pdfX1: Math.max(...xs),
+        pdfY0: Math.min(...ys), pdfY1: Math.max(...ys),
+        devX0: Math.min(...devXs), devX1: Math.max(...devXs),
+        devY0: Math.min(...devYs), devY1: Math.max(...devYs),
+      });
+    }
+  }
+  return placed;
+}
+
+function cropCanvas(source: HTMLCanvasElement, x0: number, y0: number, x1: number, y1: number): HTMLCanvasElement {
+  const w = Math.max(1, Math.round(x1 - x0));
+  const h = Math.max(1, Math.round(y1 - y0));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext('2d')!.drawImage(source, x0, y0, w, h, 0, 0, w, h);
+  return canvas;
+}
+
+/** Trims uniform white/transparent margins and reports whether anything
+ * meaningful was left — used to skip embedding a header crop when a
+ * document has no letterhead art at all. */
+function autoTrim(canvas: HTMLCanvasElement): { canvas: HTMLCanvasElement; blank: boolean } {
+  const { width, height } = canvas;
+  const ctx = canvas.getContext('2d')!;
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const isBackground = (x: number, y: number) => {
+    const i = (y * width + x) * 4;
+    return data[i + 3] < 10 || (data[i] > 248 && data[i + 1] > 248 && data[i + 2] > 248);
+  };
+  const rowHasContent = (y: number) => {
+    for (let x = 0; x < width; x++) if (!isBackground(x, y)) return true;
+    return false;
+  };
+  const colHasContent = (x: number) => {
+    for (let y = 0; y < height; y++) if (!isBackground(x, y)) return true;
+    return false;
+  };
+
+  let top = 0, bottom = height - 1, left = 0, right = width - 1;
+  while (top < height && !rowHasContent(top)) top++;
+  while (bottom > top && !rowHasContent(bottom)) bottom--;
+  while (left < width && !colHasContent(left)) left++;
+  while (right > left && !colHasContent(right)) right--;
+
+  if (top >= bottom || left >= right) return { canvas, blank: true };
+  return { canvas: cropCanvas(canvas, left, top, right + 1, bottom + 1), blank: false };
+}
+
+function canvasToPng(canvas: HTMLCanvasElement): { dataUrl: string; width: number; height: number } {
+  return { dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height };
+}
+
+function dataUrlToUint8Array(dataUrl: string): Uint8Array {
+  const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Best-effort extraction of a header emblem (rendered from the page area
+ * above the first line of text, since letterhead art is frequently vector
+ * graphics with no embeddable image object) and a footer logo (a real
+ * embedded image, found via the operator list, that's wide and sits in the
+ * bottom band of the page — the geometric signature of a footer banner as
+ * opposed to e.g. an inline signature graphic elsewhere on the page).
  *
- * This is a text-extraction based conversion, not a layout engine: it
- * recovers editable text but can't reconstruct tables, images, columns, or
- * drawn annotations (signatures, highlights, freehand ink).
+ * Certain detection of "this is the header" isn't possible from geometry
+ * alone, so this deliberately stays a heuristic; callers can always
+ * override it via the `assets` parameter of exportToWord.
+ */
+async function detectHeaderFooterImages(
+  doc: pdfjsLib.PDFDocumentProxy,
+  pageIndex: number,
+  firstLine: { y: number; fontSize: number } | null
+): Promise<{ header?: { dataUrl: string; width: number; height: number }; footer?: { dataUrl: string; width: number; height: number } }> {
+  const page = await doc.getPage(pageIndex + 1);
+  const scale = 2;
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise;
+
+  const placed = await findPlacedImages(page, viewport);
+  const pageWidthPt = page.getViewport({ scale: 1 }).width;
+  const pageHeightPt = page.getViewport({ scale: 1 }).height;
+
+  let footer: { dataUrl: string; width: number; height: number } | undefined;
+  const footerCandidate = placed.find(
+    (img) => img.pdfY1 < pageHeightPt * 0.25 && img.pdfX1 - img.pdfX0 > pageWidthPt * 0.5
+  );
+  if (footerCandidate) {
+    const cropped = cropCanvas(canvas, footerCandidate.devX0, footerCandidate.devY0, footerCandidate.devX1, footerCandidate.devY1);
+    footer = canvasToPng(cropped);
+  }
+
+  let header: { dataUrl: string; width: number; height: number } | undefined;
+  if (firstLine !== null) {
+    const topOfFirstLine = firstLine.y + firstLine.fontSize * 0.85;
+    const bottomDev = (pageHeightPt - topOfFirstLine) * scale;
+    if (bottomDev > 10) {
+      const { canvas: trimmed, blank } = autoTrim(cropCanvas(canvas, 0, 0, viewport.width, bottomDev));
+      if (!blank) header = canvasToPng(trimmed);
+    }
+  }
+
+  return { header, footer };
+}
+
+function toImageRun(img: { dataUrl: string; width: number; height: number }, maxWidthPx: number): ImageRun {
+  const scale = Math.min(1, maxWidthPx / img.width);
+  return new ImageRun({
+    type: 'png',
+    data: dataUrlToUint8Array(img.dataUrl),
+    transformation: { width: img.width * scale, height: img.height * scale },
+  });
+}
+
+// ===========================================================================
+// Feature 7: header/footer detection — repeating text across pages, with a
+// single-page fallback based on position alone (top/bottom ~10% band).
+// ===========================================================================
+
+function normalizeForRepeat(text: string): string {
+  return text.trim().replace(/\d+/g, '#').replace(/\s+/g, ' ');
+}
+
+function bandLines(lines: Line[], pageHeight: number, band: 'top' | 'bottom'): Line[] {
+  const threshold = pageHeight * 0.1;
+  return lines.filter((l) => (band === 'top' ? l.y > pageHeight - threshold : l.y < threshold));
+}
+
+function signature(lines: Line[]): string {
+  return lines.map((l) => normalizeForRepeat(l.text)).join('|');
+}
+
+interface RepeatingBand {
+  representative: Line[];
+  pageIndex: number;
+  excluded: Set<Line>;
+}
+
+/** Content repeating at the same top/bottom position across most pages
+ * (e.g. a running title or a "Page N" footer) is real header/footer
+ * material, not body text — this only fires for multi-page documents,
+ * since a single page gives no basis to tell "repeats" from "just happens
+ * to be near the top". */
+function detectRepeatingBand(pagesLines: Line[][], pageHeights: number[], band: 'top' | 'bottom'): RepeatingBand | null {
+  if (pagesLines.length < 2) return null;
+  const perPage = pagesLines.map((lines, i) => bandLines(lines, pageHeights[i], band));
+  const sigCount = new Map<string, number>();
+  const sigFirst = new Map<string, { lines: Line[]; pageIndex: number }>();
+  perPage.forEach((bl, pageIndex) => {
+    if (bl.length === 0) return;
+    const sig = signature(bl);
+    if (!sig) return;
+    sigCount.set(sig, (sigCount.get(sig) ?? 0) + 1);
+    if (!sigFirst.has(sig)) sigFirst.set(sig, { lines: bl, pageIndex });
+  });
+  let bestSig: string | null = null;
+  let bestCount = 0;
+  for (const [sig, count] of sigCount) {
+    if (count > bestCount) { bestSig = sig; bestCount = count; }
+  }
+  const threshold = Math.max(2, Math.ceil(pagesLines.length * 0.6));
+  if (!bestSig || bestCount < threshold) return null;
+
+  const excluded = new Set<Line>();
+  perPage.forEach((bl) => {
+    if (bl.length > 0 && signature(bl) === bestSig) bl.forEach((l) => excluded.add(l));
+  });
+  const rep = sigFirst.get(bestSig)!;
+  return { representative: rep.lines, pageIndex: rep.pageIndex, excluded };
+}
+
+function buildBandParagraph(line: Line, margins: Margins, pageWidth: number): Paragraph {
+  const alignment = classifyAlignment(line, margins, pageWidth);
+  return new Paragraph({
+    bidirectional: line.rtl,
+    alignment: ALIGNMENT_MAP[alignment],
+    children: line.runs.length > 0 ? line.runs.map((r) => runToTextRun(r, line.rtl)) : [new TextRun({ text: '' })],
+  });
+}
+
+// ===========================================================================
+// Paragraph -> docx.Paragraph
+// ===========================================================================
+
+function buildParagraph(p: ParagraphData, pageBreakBefore: boolean): Paragraph {
+  const numbering = p.marker ? { reference: numberingReferenceFor(p.marker, p.rtl), level: 0 } : undefined;
+  const spacing: { after: number; before?: number; line?: number; lineRule?: (typeof LineRuleType)[keyof typeof LineRuleType] } = {
+    after: p.spacingAfterTwips,
+  };
+  if (p.marker) spacing.before = 160;
+  if (p.lineSpacingTwips) {
+    spacing.line = p.lineSpacingTwips;
+    spacing.lineRule = LineRuleType.AT_LEAST;
+  }
+  return new Paragraph({
+    pageBreakBefore,
+    bidirectional: p.rtl,
+    alignment: ALIGNMENT_MAP[p.alignment],
+    numbering,
+    spacing,
+    children: p.runs.length > 0 ? p.runs.map((r) => runToTextRun(r, p.rtl)) : [new TextRun({ text: '' })],
+  });
+}
+
+// ===========================================================================
+// Orchestration
+// ===========================================================================
+
+/**
+ * Convert a PDF's content into a .docx file, reconstructing as much of the
+ * original formatting as span-level extraction allows: per-paragraph
+ * alignment and RTL/LTR direction, bold/italic/size/color read from actual
+ * font and paint state (never forced document-wide), real numbered/bulleted
+ * lists, best-effort ruled-table reconstruction, header/footer images and
+ * repeating header/footer text, font-family fallback by language, and
+ * approximate paragraph/line spacing.
+ *
+ * This is still a text-extraction based conversion, not a layout engine —
+ * multi-column layouts and borderless ("ghost-grid") tables aren't
+ * reconstructed. Where certain detection isn't possible (e.g. whether a
+ * given image is really a header logo), a reasonable heuristic is used;
+ * `assets` lets a caller override the auto-detected header/footer image.
  */
 export async function exportToWord(
   pdfBuffer: ArrayBuffer,
-  activePages: number[]
+  activePages: number[],
+  assets?: WordExportAssets
 ): Promise<Blob> {
   const doc = await loadPdfDocument(pdfBuffer);
-  const children: Paragraph[] = [];
+  const children: (Paragraph | Table)[] = [];
 
-  for (let i = 0; i < activePages.length; i++) {
-    const lines = await extractPageLines(doc, activePages[i]);
+  const pageContents: PageContent[] = [];
+  for (const pageIndex of activePages) {
+    pageContents.push(await extractPageLines(doc, pageIndex));
+  }
 
-    if (lines.length === 0) {
-      children.push(new Paragraph({ pageBreakBefore: i > 0, text: '' }));
+  const repeatingHeader = detectRepeatingBand(pageContents.map((pc) => pc.lines), pageContents.map((pc) => pc.pageHeight), 'top');
+  const repeatingFooter = detectRepeatingBand(pageContents.map((pc) => pc.lines), pageContents.map((pc) => pc.pageHeight), 'bottom');
+
+  if (pageContents.length === 0) {
+    children.push(new Paragraph({ text: '' }));
+  }
+
+  for (let i = 0; i < pageContents.length; i++) {
+    const pc = pageContents[i];
+    let lines = pc.lines;
+    if (repeatingHeader) lines = lines.filter((l) => !repeatingHeader.excluded.has(l));
+    if (repeatingFooter) lines = lines.filter((l) => !repeatingFooter.excluded.has(l));
+
+    const grid = pc.gridBoundaries ? detectTableGrid(pc.gridBoundaries, lines) : null;
+    const docRtl = isParagraphRtl(lines.map((l) => l.text).join(' '));
+
+    let needsPageBreak = i > 0;
+    if (lines.length === 0 && !grid) {
+      children.push(new Paragraph({ pageBreakBefore: needsPageBreak, text: '' }));
       continue;
     }
 
-    const bodyFontSize = [...lines.map((l) => l.fontSize)].sort((a, b) => a - b)[Math.floor(lines.length / 2)];
+    const margins = computeMargins(lines);
+    let pending: Line[] = [];
+    let tableEmitted = false;
 
-    lines.forEach((line, lineIdx) => {
-      const isHeading = line.fontSize > bodyFontSize * 1.15;
-      children.push(
-        new Paragraph({
-          pageBreakBefore: i > 0 && lineIdx === 0,
-          heading: isHeading ? HeadingLevel.HEADING_2 : undefined,
-          bidirectional: line.rtl,
-          alignment: line.rtl ? AlignmentType.RIGHT : AlignmentType.LEFT,
-          spacing: { after: 120 },
-          children: [
-            new TextRun({ text: line.text, rightToLeft: line.rtl, bold: isHeading }),
-          ],
-        })
-      );
-    });
+    const flushPending = () => {
+      if (pending.length === 0) return;
+      const paragraphs = groupIntoParagraphs(pending, margins, pc.pageWidth);
+      paragraphs.forEach((p) => {
+        children.push(buildParagraph(p, needsPageBreak));
+        needsPageBreak = false;
+      });
+      pending = [];
+    };
+
+    for (const line of lines) {
+      if (grid && grid.consumed.has(line)) {
+        if (!tableEmitted) {
+          flushPending();
+          if (needsPageBreak) {
+            children.push(new Paragraph({ pageBreakBefore: true, text: '' }));
+            needsPageBreak = false;
+          }
+          children.push(buildDocxTable(grid, docRtl));
+          tableEmitted = true;
+        }
+        continue;
+      }
+      pending.push(line);
+    }
+    flushPending();
   }
 
   if (children.length === 0) {
     children.push(new Paragraph({ text: '' }));
   }
 
-  const wordDoc = new Document({ sections: [{ children }] });
+  // Header/footer images: prefer explicitly supplied assets, otherwise try
+  // to auto-detect them from the first page.
+  let headerImage = assets?.headerImage;
+  let footerImage = assets?.footerImage;
+  if ((!headerImage || !footerImage) && activePages.length > 0) {
+    const firstPageLines = pageContents[0]?.lines ?? [];
+    const topLine = firstPageLines.reduce<Line | null>((top, l) => (!top || l.y > top.y ? l : top), null);
+    const detected = await detectHeaderFooterImages(
+      doc,
+      activePages[0],
+      topLine ? { y: topLine.y, fontSize: topLine.fontSize } : null
+    );
+    headerImage = headerImage ?? detected.header;
+    footerImage = footerImage ?? detected.footer;
+  }
+
+  const headerParagraphs: Paragraph[] = [];
+  if (headerImage) headerParagraphs.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [toImageRun(headerImage, 200)] }));
+  if (repeatingHeader) {
+    const repMargins = computeMargins(pageContents[repeatingHeader.pageIndex].lines);
+    const repWidth = pageContents[repeatingHeader.pageIndex].pageWidth;
+    repeatingHeader.representative.forEach((l) => headerParagraphs.push(buildBandParagraph(l, repMargins, repWidth)));
+  }
+
+  const footerParagraphs: Paragraph[] = [];
+  if (repeatingFooter) {
+    const repMargins = computeMargins(pageContents[repeatingFooter.pageIndex].lines);
+    const repWidth = pageContents[repeatingFooter.pageIndex].pageWidth;
+    repeatingFooter.representative.forEach((l) => footerParagraphs.push(buildBandParagraph(l, repMargins, repWidth)));
+  }
+  if (footerImage) footerParagraphs.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [toImageRun(footerImage, 500)] }));
+
+  const header = headerParagraphs.length > 0 ? new Header({ children: headerParagraphs }) : undefined;
+  const footer = footerParagraphs.length > 0 ? new Footer({ children: footerParagraphs }) : undefined;
+
+  const wordDoc = new Document({
+    numbering: NUMBERING_CONFIG,
+    sections: [
+      {
+        headers: header ? { default: header } : undefined,
+        footers: footer ? { default: footer } : undefined,
+        children,
+      },
+    ],
+  });
   return Packer.toBlob(wordDoc);
 }
